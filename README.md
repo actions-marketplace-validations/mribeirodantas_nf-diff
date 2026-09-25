@@ -1,10 +1,13 @@
 # nf-diff
 
+[![Nextflow](https://img.shields.io/badge/nextflow-%E2%89%A525.04.0-brightgreen.svg)](https://www.nextflow.io/)
 [![CI](https://github.com/mribeirodantas/nf-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/mribeirodantas/nf-diff/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/mribeirodantas/nf-diff?sort=semver&label=release)](https://github.com/mribeirodantas/nf-diff/releases/latest)
 [![License](https://img.shields.io/github/license/mribeirodantas/nf-diff)](LICENSE)
 
 **[Documentation site](https://mribeirodantas.github.io/nf-diff/)**
+
+## Summary
 
 > **My pipeline behaved differently this time — what actually changed?**
 
@@ -38,12 +41,14 @@ By default the report highlights **meaningful** changes and treats always-differ
 
 A single, standalone HTML document — inline CSS/JS/SVG, no network access, light/dark theme — that you can open in a browser or email to a colleague. It's paginated behind a vertical sidebar, and the performance page leads with a diverging-bar chart of the biggest movers. For CI and scripting, `--format=json` and `--format=md` emit the same comparison, and `--fail-on-change` turns any difference into a non-zero exit code.
 
-## Requirements
+## Get Started
+
+Use the published plugin directly with Nextflow, or configure the local repository described below when testing an unpublished build.
 
 - **Nextflow** `>= 25.04.0`, **Java** 17+
 - Two runs present in the local `.nextflow/history` of the project you're inspecting
 
-## Quick start
+## Examples
 
 ```bash
 # Compare the two most recent runs
@@ -63,7 +68,9 @@ nextflow plugin nf-diff:diff --last --fail-on-change
 
 `nf-diff` includes a composite GitHub Action to compare runs on Pull Requests and post rich Markdown summary comments:
 
-For a working example, see the [`nf-diff` workflow in demo-nf-pipeline](https://github.com/mribeirodantas/demo-nf-pipeline/pull/1).
+The GitHub Action enables `diff-all` by default, so it compares task outputs, logs, and DAG wiring when the required work directories are available. Set `diff-all: 'false'` to disable this behavior.
+
+For working examples, see PR [#1](https://github.com/mribeirodantas/demo-nf-pipeline/pull/1) in the [`nf-diff` workflow in demo-nf-pipeline](https://github.com/mribeirodantas/demo-nf-pipeline).
 
 ```yaml
 - name: Compare PR run with baseline
@@ -89,3 +96,7 @@ The full reference is published at **[mribeirodantas.github.io/nf-diff](https://
 - **[Comparison layers](docs/layers.md)** — what each layer detects and the meaningful-vs-everything verdict.
 - **[How it works](docs/how-it-works.md)** — how a run is reconstructed and compared internally.
 - **[Development](docs/development.md)** — building, layout, CI, and releasing.
+
+## License
+
+`nf-diff` is licensed under the [Apache License 2.0](LICENSE).

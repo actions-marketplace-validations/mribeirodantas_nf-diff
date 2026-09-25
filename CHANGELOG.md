@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI: pipeline logs are uploaded as a downloadable artifact when the nf-diff
+  dogfood workflow fails.** On failure, the workflow now collects the top-level
+  `.nextflow.log` and each task's `.command.log`/`.command.err`/`.command.out`
+  (flattened with the work-dir hash in the filename) and uploads them as the
+  `pipeline-logs-<run_id>` artifact (14-day retention), making failed PR-diff
+  runs easier to debug.
+
+## [0.9.1] - 2026-09-21
+
+### Fixed
+
+- Bump Gradle plugin version
+
+## [0.9.0] - 2026-09-21
+
+### Added
+
+- **Central run archive for comparing runs after their project directories are
+  gone.** When a pipeline opts in with `diff.archive.enabled = true`, an
+  end-of-run trace observer snapshots each finished run into a shared archive
+  directory, and `diff` transparently falls back to that archive whenever a
+  requested run is no longer in the local `.nextflow/history`. The observer is
+  off by default and inert unless enabled, so existing users see no behaviour
+  change. `mode = 'lightweight'` (default) stores run and per-task metadata;
+  `mode = 'complete'` also copies each task's output and `.command.*` log files
+  (staged input symlinks are skipped). The archive location resolves from
+  `diff.archive.dir` / `--archive-dir`, then `NXF_DIFF_ARCHIVE_DIR`, then the
+  default `$NXF_HOME/nf-diff/archive`. Archiving is best-effort and never fails
+  the pipeline run.
+
+### Fixed
+
+- **File-content comparison now decides identity on the full SHA-256 digest,
+  not a truncated 12-character prefix.** Two same-size files that differed only
+  beyond the first 48 bits of their digest could previously collide and be
+  misreported as `UNCHANGED` — and such a change would not count toward
+  `--fail-on-change`. The equality decision now compares full digests; the
+  12-character prefix is retained only for compact display in the report, so
+  HTML/JSON output is unchanged. Affects `--diff-outputs` and the
+  `--published-a`/`--published-b` comparison.
+
+### Documentation
+
+- **Documented the central run archive** (`diff.archive.*` config, the
+  `--archive-dir` option, `NXF_DIFF_ARCHIVE_DIR`, and the lightweight/complete
+  modes) in the usage guide and website docs.
+- **Documented that archiving requires the plugin to be active for the run.**
+  The archive section now shows the `plugins { id 'nf-diff@<version>' }`
+  declaration (or `-plugins nf-diff@<version>`) needed so the end-of-run
+  observer is loaded — `diff.archive.enabled = true` alone has no effect unless
+  the pipeline loads the plugin.
+
+## [0.8.0] - 2026-09-18
+
+### Added
+
+- **The GitHub Action now enables `diff-all` by default.** Action users get
+  task output, log, and DAG-wiring comparisons without adding the flag;
+  setting `diff-all: 'false'` restores the opt-out behavior.
+- **The GitHub Action's PR comment now falls back to a short summary when the
+  full report would exceed GitHub's 65,536-character comment limit.** The
+  fallback keeps the summary/runs tables and links to the uploaded HTML
+  report artifact for the complete diff, instead of failing to post.
+
+### Documentation
+
+- **GitHub Action examples now link to a working demo pull request** in the
+  `demo-nf-pipeline` repository, making the CI integration easier to try and
+  verify.
+- **GitHub Action examples now enable Nextflow data lineage for compared runs.**
+  The cache-backed examples pass a shared `lineage.config` file to both
+  pipeline runs and cache the `.lineage` store alongside `.nextflow`. The
+  dual-run example enables lineage for both directories, and the documentation
+  explains that lineage must be enabled before execution for authoritative DAG
+  and runtime metadata comparison.
+- **Documented that Nextflow lineage is optional.** When no `.lineage` store is
+  available, `nf-diff` falls back to work-directory symlinks where needed; the
+  documentation also explains when to enable lineage and that cache-backed
+  workflows should preserve `.lineage` alongside `.nextflow`.
+
 ## [0.7.0] - 2026-09-12
 
 ### Added

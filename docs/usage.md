@@ -62,6 +62,7 @@ nextflow plugin nf-diff:diff <runA> <runB> [options]
 | `-q`, `--quiet`, `--summary-only` | Print only the summary block (the `N changed, …` line); skip rendering and writing the full report. Handy for CI logs where the report body is noise. Exit-code behaviour (including `--fail-on-change`) is unaffected. |
 | `--dir=<dir>`          | Project directory containing `.nextflow/` (default: `.`). Used for both runs unless overridden per-run below. |
 | `--dir-a=<dir>` / `--dir-b=<dir>` | Per-run project directory for run A / run B (its `.nextflow/` history, cache, config and params). Use these to compare a run from one project or checkout against a run from another ("same pipeline, two directories"). Each falls back to `--dir` when omitted. Cannot be combined with `--last`, which needs a single history. |
+| `--archive-dir=<dir>` | Directory of the central run archive to consult when a run is no longer in the local `.nextflow/` history (e.g. its project directory was deleted). Runs land there automatically when a pipeline sets `diff.archive.enabled = true` (see [Central run archive](#central-run-archive)). Defaults to `$NXF_HOME/nf-diff/archive` (or the `NXF_DIFF_ARCHIVE_DIR` environment variable). The local history always takes precedence; the archive is only a fallback. |
 | `-v`, `--verbose`, `--all` | Also diff fields that always change between runs (run name, session id, launch time, work dir, wall/real time, resource usage) |
 | `-h`, `--help`         | Show help                                                                                        |
 
@@ -116,6 +117,9 @@ nextflow plugin nf-diff:diff runA runB --dir=/path/to/project --verbose
 # Compare the same pipeline across two checkouts/projects (run per directory)
 nextflow plugin nf-diff:diff runA runB --dir-a=/path/to/checkout-v1 --dir-b=/path/to/checkout-v2
 
+# Compare two archived runs after their project dirs are gone (needs diff.archive.enabled)
+nextflow plugin nf-diff:diff run_one run_two --archive-dir=/shared/nf-diff-archive
+
 # CI-friendly: emit JSON and fail the step if anything changed
 nextflow plugin nf-diff:diff --last --format=json --fail-on-change
 
@@ -158,15 +162,64 @@ The HTML report is fully self-contained (inline CSS/JS/SVG) with a light/dark th
 | `2`  | Usage error (bad arguments, unknown option)                         |
 | `3`  | Runs differ **and** `--fail-on-change` was set                      |
 
+## Central run archive
+
+By default `nf-diff` is entirely passive: it does nothing at the end of a pipeline run and only acts when you invoke `nextflow plugin nf-diff:diff`, reading the local `.nextflow/history` and `.nextflow/cache/` of the project. That works only as long as those directories survive — once a project directory (or a CI runner's workspace) is deleted, the run is gone and can no longer be compared.
+
+The central run archive lifts that limitation. When a pipeline **opts in** via config, `nf-diff` registers an end-of-run trace observer that snapshots each finished run into a shared archive directory. Later, `diff` transparently falls back to that archive whenever a requested run is no longer in the local history — so you can still compare runs long after their working directories are gone.
+
+Enable it in the pipeline's `nextflow.config`. Archiving runs during a normal `nextflow run`, so the pipeline must **load the plugin** — the `diff.archive.*` settings alone do nothing unless `nf-diff` is an active plugin for that run. Declare it in the `plugins` block (or pass `-plugins nf-diff@<version>` on the command line):
+
+```groovy
+plugins {
+    id 'nf-diff@0.9.1'   // required so the end-of-run archive observer is loaded
+}
+
+diff {
+    archive {
+        enabled = true          // off by default — nothing is archived unless this is true
+        mode    = 'lightweight' // 'lightweight' (default) = run + task metadata only;
+                                //  'complete' = also copy each task's output and .command.* log files
+        dir     = '/shared/nf-diff-archive'   // optional; see resolution order below
+    }
+}
+```
+
+> The bare-id caveat for the `nextflow plugin nf-diff:diff` CLI verb does **not** apply here: in a `plugins` block you pin an explicit version (`nf-diff@<version>`), exactly like any other Nextflow plugin.
+
+- **`enabled`** — When `false` (the default) the observer is never registered and nothing happens at the end of a run. Existing users see no behaviour change.
+- **`mode`** — `'lightweight'` stores only run-level metadata and per-task trace fields (enough for the summary, performance, and resource layers). `'complete'` additionally copies each task's output files and `.command.out`/`.command.err`/`.command.log` into the archive, so the output- and log-diff layers keep working after the work directories are deleted. Staged **input** symlinks are intentionally *not* copied, to avoid dragging large upstream inputs into the archive.
+- **`dir`** — Where snapshots are written. Resolution order (shared by the writer and the `diff` reader, so a custom location stays consistent): the explicit config value / `--archive-dir`, then the `NXF_DIFF_ARCHIVE_DIR` environment variable, then the default `$NXF_HOME/nf-diff/archive` (falling back to `~/.nextflow/nf-diff/archive` when `NXF_HOME` is unset).
+
+Each run is stored as `<sessionId>.json`; in `complete` mode its task files live alongside under `<sessionId>/tasks/`. Reading is automatic — `diff` checks the local history first and only consults the archive as a fallback — but you can point at a non-default location explicitly with `--archive-dir=<dir>`:
+
+```bash
+# On the machine that ran the pipeline (with diff.archive.enabled = true), the run
+# is written to the archive automatically. Later, even after the project is deleted:
+nextflow plugin nf-diff:diff run_one run_two --archive-dir=/shared/nf-diff-archive
+```
+
+The observer is best-effort and never fails the pipeline: if archiving hits an error it is logged to `.nextflow.log` (grep for `nf-diff`) rather than aborting the run.
+
 ## GitHub Action
 
 This repository ships a composite action (`action.yml`) that wraps the `nf-diff:diff` verb for CI.
+
+The Action enables `diff-all` by default, so it compares task outputs, logs, and DAG wiring when the required work directories are available. Set `diff-all: 'false'` to disable this behavior.
 
 For a working example, see the [`nf-diff` workflow in demo-nf-pipeline](https://github.com/mribeirodantas/demo-nf-pipeline/pull/1).
 
 ### How it works in CI
 
 `nf-diff` does **not** execute your pipeline; it inspects the `.nextflow/history` file and `.nextflow/cache/` database generated by Nextflow runs.
+
+Lineage is optional. When a `.lineage` store is available, `nf-diff` uses it for authoritative process wiring and runtime metadata; otherwise it falls back to the work directories where needed. The baseline and PR workflow examples below enable lineage automatically. If you are setting up a different workflow and want the authoritative data, create a config file such as `lineage.config` with the following content and pass it with `-c lineage.config` to each `nextflow run`:
+
+```groovy
+lineage.enabled = true
+```
+
+The `nf-diff` action cannot create lineage data after the pipeline has finished. When using a custom cache-backed workflow, cache the `.lineage` directory together with `.nextflow` so the baseline lineage store is available to the PR run.
 
 To check for changes when opening a Pull Request, there are two main patterns:
 1. **[Pattern A (Recommended): Cache-backed baseline](#pattern-a-cache-backed-baseline-recommended)** — Run the baseline pipeline once on `main` and cache its `.nextflow/` and output directories. On PRs, restore that cache, run the PR code once, and compare. Saves time, compute, and keeps Git repo size clean.
@@ -203,15 +256,19 @@ jobs:
       - name: Set up Nextflow
         uses: nf-core/setup-nextflow@v2
 
+      - name: Enable Nextflow lineage
+        run: printf '%s\n' 'lineage.enabled = true' > lineage.config
+
       - name: Run baseline pipeline
         run: |
-          nextflow run main.nf -profile test --outdir baseline-results
+          nextflow run main.nf -profile test -c lineage.config --outdir baseline-results
 
       - name: Cache baseline run and outputs
         uses: actions/cache/save@v4
         with:
           path: |
             .nextflow
+            .lineage
             baseline-results
           key: nf-baseline-${{ github.sha }}
 ```
@@ -238,6 +295,9 @@ jobs:
       - name: Set up Nextflow
         uses: nf-core/setup-nextflow@v2
 
+      - name: Enable Nextflow lineage
+        run: printf '%s\n' 'lineage.enabled = true' > lineage.config
+
       # 1. Fetch latest baseline from main
       - name: Restore baseline from main
         uses: actions/cache/restore@v4
@@ -245,6 +305,7 @@ jobs:
         with:
           path: |
             .nextflow
+            .lineage
             baseline-results
           key: nf-baseline-${{ github.sha }}
           restore-keys: |
@@ -253,7 +314,7 @@ jobs:
       # 2. Run pipeline with PR code
       - name: Run pipeline on PR
         run: |
-          nextflow run main.nf -profile test --outdir pr-results
+          nextflow run main.nf -profile test -c lineage.config --outdir pr-results
 
       # 3. Compare PR run against baseline (only if baseline cache was restored)
       - name: Run nf-diff against baseline
@@ -305,17 +366,22 @@ jobs:
       - name: Set up Nextflow
         uses: nf-core/setup-nextflow@v2
 
+      - name: Enable Nextflow lineage
+        run: |
+          printf '%s\n' 'lineage.enabled = true' > baseline-branch/lineage.config
+          printf '%s\n' 'lineage.enabled = true' > pr-branch/lineage.config
+
       # Run baseline
       - name: Run baseline on main
         run: |
           cd baseline-branch
-          nextflow run main.nf -profile test --outdir results_baseline
+          nextflow run main.nf -profile test -c lineage.config --outdir results_baseline
 
       # Run PR
       - name: Run PR version
         run: |
           cd pr-branch
-          nextflow run main.nf -profile test --outdir results_pr
+          nextflow run main.nf -profile test -c lineage.config --outdir results_pr
 
       # Compare cross-directory runs
       - name: Run nf-diff
@@ -334,6 +400,93 @@ jobs:
 
 ---
 
+### Collecting pipeline logs on failure
+
+`nf-diff` inspects a run after the fact — it does not run your pipeline. If one
+of the `nextflow run` steps (or the diff itself) fails, the most useful
+artifacts for debugging are Nextflow's own logs. Add these steps to your
+PR-diff workflow (adjust the working directory to wherever your pipeline runs)
+so that, **on failure only**, the top-level `.nextflow.log` and every task's
+`.command.log`/`.command.err`/`.command.out` are gathered and uploaded as a
+downloadable artifact, and a sticky PR comment links straight to it:
+
+```yaml
+      # On failure, collect logs and upload as a downloadable artifact
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p pipeline-logs
+          # Top-level Nextflow log
+          cp -f .nextflow.log pipeline-logs/ 2>/dev/null || true
+          # Per-task command logs, flattened with the work hash in the filename
+          find work -type f \( -name '.command.log' -o -name '.command.err' -o -name '.command.out' \) 2>/dev/null | while read -r f; do
+            hash=$(basename "$(dirname "$f")")
+            cp -f "$f" "pipeline-logs/${hash}_$(basename "$f")"
+          done
+
+      - name: Upload logs artifact
+        if: failure()
+        id: upload-logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_id }}
+          path: pipeline-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+      # On failure, post/update a sticky PR comment linking to the logs
+      - name: Comment on PR with failure logs link
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const artifactUrl = `${{ steps.upload-logs.outputs.artifact-url }}`;
+            const marker = '<!-- nf-diff-failure -->';
+            const body = [
+              marker,
+              '### ❌ nf-diff pipeline run failed',
+              '',
+              'The pipeline run on this PR did not complete, so no baseline diff could be produced.',
+              '',
+              `📦 **Logs:** \`pipeline-logs-${context.runId}\`` +
+                (artifactUrl ? ` — [download](${artifactUrl})` : ''),
+              `🔎 **Run summary:** [view logs & artifacts](${runUrl})`,
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+```
+
+All three steps are guarded by `if: failure()`, so they add nothing to green
+runs. The upload step carries `id: upload-logs` so the comment step can link to
+the artifact via `steps.upload-logs.outputs.artifact-url`. The task logs are
+flattened with the work-dir hash prefixed to each filename so they stay distinct
+once collected into a single directory. If your pipeline runs in a subdirectory
+(as in this repo's own dogfood workflow, which runs in `demo/`), set
+`working-directory:` on the collect step and point the upload `path:` at that
+subdirectory (e.g. `demo/pipeline-logs`).
+
+---
+
 ### Inputs
 
 | Input | Default | Description |
@@ -345,7 +498,8 @@ jobs:
 | `fail-on-change` | `false` | Fail the action (exit 3) if the runs are not identical. |
 | `only` / `exclude` | — | Process-name globs to include / drop. |
 | `perf-threshold` | — | Percent change beyond which a task metric is flagged (plugin default: 25). |
-| `diff-outputs` / `diff-logs` / `diff-dag` / `diff-all` | `false` | Enable the work-dir layers (require work dirs to still exist). |
+| `diff-outputs` / `diff-logs` / `diff-dag` | `false` | Enable individual work-dir layers (require work dirs to still exist). |
+| `diff-all` | `true` | Enable all three work-dir layers (outputs + logs + DAG; require work dirs to still exist). |
 | `verbose` | `false` | Also diff always-changing fields. |
 | `dir` | `.` | Project directory containing `.nextflow/`. |
 | `dir-a` / `dir-b` | — | Per-run project directory for run A / run B (falls back to `dir`). |
@@ -354,7 +508,7 @@ jobs:
 | `nextflow-version` | — | Nextflow version to install (also exported as `NXF_VER`). |
 | `java-version` | `17` | Temurin JDK to set up. |
 | `setup-java` / `setup-nextflow` | `true` | Toggle the JDK / Nextflow install steps. |
-| `comment-pr` | `false` | Post the report as a PR comment (best with `format: md`). |
+| `comment-pr` | `false` | Post the report as a PR comment (best with `format: md`). Falls back to a short summary + artifact link if the full report would exceed GitHub's 65,536-character comment limit. |
 | `github-token` | workflow token | Token used to post the PR comment. |
 | `upload-artifact` | `true` | Upload the report as a workflow artifact. |
 | `artifact-name` | `nf-diff-report` | Name for the uploaded artifact. |
