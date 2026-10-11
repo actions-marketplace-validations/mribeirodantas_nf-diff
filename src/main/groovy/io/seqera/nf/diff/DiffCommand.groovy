@@ -36,6 +36,14 @@ class DiffCommand {
         UsageException(String message) { super(message) }
     }
 
+    /**
+     * Thrown when the user explicitly asked for help ({@code -h}/{@code --help}).
+     * Not an error: the caller prints {@link #usage()} to stdout and exits 0.
+     */
+    static class HelpRequested extends RuntimeException {
+        HelpRequested() { super('help requested') }
+    }
+
     String runA
     String runB
     Path outputFile = Paths.get('nf-diff-report.html')
@@ -281,8 +289,12 @@ ${reportLine}"""
      * Options: -o/--output &lt;file&gt;, -d/--dir &lt;dir&gt;, -h/--help
      */
     protected void parse(List<String> args) {
-        if( !args || args.contains('-h') || args.contains('--help') )
-            throw new UsageException('show help')
+        // An explicit help request is not an error (stdout, exit 0); running the
+        // verb with no arguments at all still is (stderr, exit 2).
+        if( args && (args.contains('-h') || args.contains('--help')) )
+            throw new HelpRequested()
+        if( !args )
+            throw new UsageException('no arguments given: expected two run identifiers, or --last')
 
         final positional = new ArrayList<String>()
         // The cursor owns position tracking, inline `--key=value` splitting, and
@@ -742,7 +754,7 @@ Options:
 Exit codes:
   0  Success: the runs were compared (identical, or differences not gated).
   1  Runtime error (e.g. a run id not found, unreadable history/cache).
-  2  Usage error (bad option, wrong number of run identifiers, or --help).
+  2  Usage error (bad option, wrong number of run identifiers, no arguments).
   3  Runs differ and --fail-on-change was set.
 
 Examples:

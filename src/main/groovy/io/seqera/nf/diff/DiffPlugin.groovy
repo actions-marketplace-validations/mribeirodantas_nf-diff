@@ -87,6 +87,12 @@ class DiffPlugin extends BasePlugin implements PluginAbstractExec {
         try {
             return new DiffCommand().run(args)
         }
+        catch( DiffCommand.HelpRequested ignored ) {
+            // Requested help is normal output: stdout, success.
+            System.out.println DiffCommand.usage()
+            System.out.flush()
+            return 0
+        }
         catch( DiffCommand.UsageException e ) {
             System.err.println "nf-diff: ${e.message}\n"
             System.err.println DiffCommand.usage()

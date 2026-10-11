@@ -64,7 +64,7 @@ nextflow plugin nf-diff:diff <runA> <runB> [options]
 | `--dir-a=<dir>` / `--dir-b=<dir>` | Per-run project directory for run A / run B (its `.nextflow/` history, cache, config and params). Use these to compare a run from one project or checkout against a run from another ("same pipeline, two directories"). Each falls back to `--dir` when omitted. Cannot be combined with `--last`, which needs a single history. |
 | `--archive-dir=<dir>` | Directory of the central run archive to consult when a run is no longer in the local `.nextflow/` history (e.g. its project directory was deleted). Runs land there automatically when a pipeline sets `diff.archive.enabled = true` (see [Central run archive](#central-run-archive)). Defaults to `$NXF_HOME/nf-diff/archive` (or the `NXF_DIFF_ARCHIVE_DIR` environment variable). The local history always takes precedence; the archive is only a fallback. |
 | `-v`, `--verbose`, `--all` | Also diff fields that always change between runs (run name, session id, launch time, work dir, wall/real time, resource usage) |
-| `-h`, `--help`         | Show help                                                                                        |
+| `-h`, `--help`         | Show help (printed to stdout; exits `0`)                                                         |
 
 > **Use the inline `--output=<file>` form (with `=`).** Nextflow's `plugin` launcher swallows space-separated flags such as `-o compare.html` before they reach the plugin.
 
