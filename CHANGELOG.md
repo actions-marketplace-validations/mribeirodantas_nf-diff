@@ -113,6 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never ran or exited before recording its report paths (e.g. missing
   `run-a`/`run-b`), the upload paths collapsed to `<dir>/`; the upload is now
   skipped in that case.
+- **GitHub Action: user-provided inputs can no longer inject shell commands**
+  ([PR #40](https://github.com/mribeirodantas/nf-diff/pull/40)). Values used by
+  embedded Bash scripts are passed through environment variables, and command
+  arguments are assembled as quoted arrays rather than interpolated into shell
+  source.
 - **GitHub Action: the sticky PR comment no longer overwrites unrelated
   comments** ([#11](https://github.com/mribeirodantas/nf-diff/issues/11)). It
   used `gh pr comment --edit-last`, which edits the token's most recent comment
