@@ -665,8 +665,8 @@ class RunComparator {
         Map<String,String> cb
         try {
             final loader = new ConfigLoader()
-            ca = loader.resolve(a.command, baseDirA)
-            cb = loader.resolve(b.command, baseDirB)
+            ca = loader.resolve(a.command, baseDirA, a.revisionId)
+            cb = loader.resolve(b.command, baseDirB, b.revisionId)
         }
         catch( Exception e ) {
             log.warn "nf-diff: could not resolve configuration: ${e.message}"
@@ -689,10 +689,17 @@ class RunComparator {
             result.configNote = crossProject
                     ? ('Resolved from the current on-disk config files under ' +
                        "${baseDirA} (run A) and ${baseDirB} (run B), applying each run's " +
-                       '-profile/-c options — not a snapshot of the config at launch time.').toString()
+                       '-profile/-c/-C options, --params and -params-file (plus the pipeline\'s own config for remote pipelines) — not a snapshot of the config at launch time.').toString()
                     : ('Resolved from the current on-disk config files under ' +
-                       "${baseDirA}, applying each run's -profile/-c options — not a " +
-                       'snapshot of the config at launch time.').toString()
+                       "${baseDirA}, applying each run's -profile/-c/-C options, --params and " +
+                       '-params-file (plus the pipeline\'s own config for remote pipelines) — not a snapshot of the config at launch time.').toString()
+
+        final revNotes = [['A', a.command, baseDirA], ['B', b.command, baseDirB]].findResults { List it ->
+            final n = ConfigLoader.revisionNote((String) it[1], (Path) (it[2] ?: java.nio.file.Paths.get('.')))
+            n ? "Run ${it[0]}: ${n}".toString() : null
+        }
+        if( revNotes )
+            result.configNote = result.configNote + ' ' + revNotes.join('; ') + '.'
 
         result.configProvenance = computeConfigProvenance(a, b)
     }
