@@ -57,9 +57,6 @@ jobs:
               script:
               """
               echo "${message}" > out.txt
-              # TEMP: deliberately fail to exercise the failure log-artifact steps
-              echo "Simulating a task failure for CI testing" >&2
-              exit 1
               """
           }
 
@@ -72,8 +69,8 @@ jobs:
 
           # Two runs that differ only in a pipeline param, so nf-diff has a
           # meaningful change to report.
-            nextflow run main.nf -c lineage.config --message hello
-            nextflow run main.nf -c lineage.config --message world
+          nextflow run main.nf -c lineage.config --message hello
+          nextflow run main.nf -c lineage.config --message world
 
       - name: Run nf-diff on the two demo runs
         uses: ./
