@@ -95,6 +95,50 @@ class GitProvenanceTest extends Specification {
         !state.dirty
     }
 
+    private String head() {
+        final proc = new ProcessBuilder(['git', 'rev-parse', 'HEAD']).directory(dir.toFile()).start()
+        final out = proc.inputStream.text.trim()
+        proc.errorStream.text
+        assert proc.waitFor() == 0
+        return out
+    }
+
+    def 'isCommit recognises commits of the repository, full or abbreviated (#9)'() {
+        given:
+        initRepo()
+        def sha = head()
+        def gp = new GitProvenance()
+
+        expect:
+        gp.isCommit(dir, sha)
+        gp.isCommit(dir, sha.substring(0, 10))
+        gp.isCommit(dir, sha.toUpperCase())
+    }
+
+    def 'isCommit rejects values that are not a commit of this repository (#9): #desc'() {
+        given:
+        initRepo()
+
+        expect:
+        !new GitProvenance().isCommit(dir, rev)
+
+        where:
+        desc                         | rev
+        'a Nextflow scriptId'        | '47e64accfc5d8f61b1a3d9b3e0f1c2a4'
+        'a foreign 40-hex commit'    | '8a7f5c0d3b2e1f4a6c9d8e7b5a4c3d2e1f0a9b8c'
+        'a branch name'              | 'master'
+        'a symbolic ref'             | 'HEAD'
+        'too short to be an id'      | 'abc12'
+        'blank'                      | '  '
+        'null'                       | null
+    }
+
+    def 'isCommit is false outside a repository'() {
+        expect:
+        !new GitProvenance().isCommit(dir, '47e64accfc5d8f61b1a3d9b3e0f1c2a4')
+        !new GitProvenance().isCommit(null, '47e64accfc')
+    }
+
     def 'a null directory is handled gracefully'() {
         expect:
         !new GitProvenance().inspect(null).isRepo()

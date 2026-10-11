@@ -79,6 +79,29 @@ class GitProvenance {
     }
 
     /**
+     * True when {@code rev} looks like a (possibly abbreviated) commit id and
+     * names an existing commit of the repository containing {@code dir}.
+     *
+     * <p>Nextflow's history {@code revisionId} is {@code commitId ?: scriptId}:
+     * for a local {@code nextflow run main.nf} it is a hash of the script text,
+     * and for a remote/hub pipeline it is a commit of the checkout under
+     * {@code ~/.nextflow/assets}, not of the launch directory. Only a value that
+     * resolves to a commit here can meaningfully be compared with {@code HEAD}.
+     * Branch or tag names (an archived run may record {@code -r main}) are
+     * rejected by the hex check so they are never mistaken for drift. Never
+     * throws; any failure yields false.
+     */
+    boolean isCommit(Path dir, String rev) {
+        if( dir == null || !rev || !Files.isDirectory(dir) )
+            return false
+        final r = rev.trim()
+        if( !(r ==~ /[0-9a-fA-F]{7,40}/) )
+            return false
+        // `cat-file -e <rev>^{commit}` exits 0 only for an unambiguous commit.
+        return run(dir, ['git', 'cat-file', '-e', "${r}^{commit}".toString()]) != null
+    }
+
+    /**
      * Run a git command in {@code dir}, returning its stdout on a clean (zero)
      * exit or null on any error, non-zero exit, or timeout.
      *
