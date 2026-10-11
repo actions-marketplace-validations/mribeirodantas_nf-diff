@@ -274,7 +274,10 @@ runs:
 
     - name: Upload report artifact
       id: upload
-      if: always() && inputs.upload-artifact == 'true'
+      # Only once the diff step has recorded its report paths: if it never ran or
+      # bailed out early (e.g. missing run-a/run-b), both outputs are empty and the
+      # paths below collapse to `<dir>/`, which would upload the whole directory.
+      if: always() && inputs.upload-artifact == 'true' && steps.diff.outputs.report-path != ''
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
