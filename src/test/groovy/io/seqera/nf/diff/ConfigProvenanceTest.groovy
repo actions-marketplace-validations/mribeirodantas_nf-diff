@@ -64,6 +64,18 @@ class ConfigProvenanceTest extends Specification {
         prov.warning().contains('both runs were')
     }
 
+    def 'both runs drifted to the same revision is described once (#9)'() {
+        given:
+        def prov = new DiffResult.ConfigProvenance(
+                gitAvailable: true, currentRevision: 'deadbeefcafe',
+                revisionA: '1111111111aa', revisionB: '1111111111aa',
+                driftedA: true, driftedB: true )
+
+        expect:
+        prov.warning().contains('both runs were launched at the same, different git revision (1111111111)')
+        !prov.warning().contains('A: 1111111111, B: 1111111111')
+    }
+
     def 'a dirty working tree warns even without drift'() {
         given:
         def prov = new DiffResult.ConfigProvenance(

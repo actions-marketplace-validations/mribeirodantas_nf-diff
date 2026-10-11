@@ -26,6 +26,8 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Function
 
+import java.util.function.Predicate
+
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import io.seqera.nf.diff.DiffResult.FieldDiff
@@ -719,10 +721,13 @@ class RunComparator {
         prov.gitAvailable = crossProject ? (stateA.isRepo() || stateB.isRepo()) : stateA.isRepo()
 
         // Run A side (also the shared tree in same-project mode).
+        final Predicate<String> commitInA = { String rev -> gp.isCommit(baseDirA, rev) } as Predicate<String>
+        final Predicate<String> commitInB = { String rev -> gp.isCommit(baseDirB, rev) } as Predicate<String>
+
         if( stateA.isRepo() ) {
             prov.currentRevision = stateA.headCommit
             prov.workingTreeDirty = stateA.dirty
-            prov.driftedA = revisionDrifted(a.revisionId, stateA.headCommit)
+            prov.driftedA = revisionDrifted(a.revisionId, stateA.headCommit, commitInA)
         }
 
         // Run B side.
@@ -732,27 +737,37 @@ class RunComparator {
             if( stateB.isRepo() ) {
                 prov.currentRevisionB = stateB.headCommit
                 prov.dirtyB = stateB.dirty
-                prov.driftedB = revisionDrifted(b.revisionId, stateB.headCommit)
+                prov.driftedB = revisionDrifted(b.revisionId, stateB.headCommit, commitInB)
             }
         }
         else if( stateA.isRepo() ) {
-            prov.driftedB = revisionDrifted(b.revisionId, stateA.headCommit)
+            prov.driftedB = revisionDrifted(b.revisionId, stateA.headCommit, commitInA)
         }
         return prov
     }
 
     /**
-     * True when a run's recorded git revision is known and differs from the
-     * current working-tree HEAD. Commit ids may be abbreviated (Nextflow can
-     * record a short id), so a shared prefix in either direction counts as a
-     * match. An unknown revision (non-git run) is never treated as drift.
+     * True when a run's recorded revision is a commit of the launch directory's
+     * repository and differs from its current HEAD.
+     *
+     * <p>Nextflow records {@code commitId ?: scriptId} in history, so the value
+     * is frequently NOT a commit of this repo: a local {@code main.nf} run
+     * records a hash of the script text, and a remote/hub pipeline records a
+     * commit of its {@code ~/.nextflow/assets} checkout (#9). Such values carry
+     * no evidence about the launch directory and are never treated as drift;
+     * only a revision that {@code isRepoCommit} confirms is compared. Commit ids
+     * may be abbreviated, so a shared prefix in either direction is a match
+     * (checked first, so the common no-drift case needs no extra git call).
+     * Package-private for unit testing.
      */
-    private static boolean revisionDrifted(String runRevision, String currentHead) {
+    static boolean revisionDrifted(String runRevision, String currentHead, Predicate<String> isRepoCommit) {
         if( !runRevision || !currentHead )
             return false
         final r = runRevision.trim()
         final c = currentHead.trim()
-        return !(c.startsWith(r) || r.startsWith(c))
+        if( !r || c.startsWith(r) || r.startsWith(c) )
+            return false
+        return isRepoCommit != null && isRepoCommit.test(r)
     }
 
     private List<ProcessDiff> compareProcesses(RunSnapshot a, RunSnapshot b) {
