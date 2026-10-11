@@ -354,10 +354,20 @@ runs:
 
         pr='${{ github.event.pull_request.number }}'
         repo='${{ github.repository }}'
-        # Prefer editing our previous comment for idempotency; fall back to
-        # creating a fresh one on older gh versions or when none exists yet.
-        gh pr comment "$pr" --repo "$repo" --edit-last --body-file nf-diff-comment.md \
-          || gh pr comment "$pr" --repo "$repo" --body-file nf-diff-comment.md
+        # Update our own previous report for idempotency, identified by the
+        # '<!-- nf-diff -->' marker every report starts with. (gh's --edit-last
+        # edits the token's most recent comment of ANY kind, so it could
+        # overwrite an unrelated bot comment posted by another step.)
+        marker='<!-- nf-diff -->'
+        existing=$(gh api --paginate "repos/${repo}/issues/${pr}/comments" \
+          --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" 2>/dev/null | tail -n 1) || existing=''
+        if [[ -n "$existing" ]] \
+          && gh api --method PATCH "repos/${repo}/issues/comments/${existing}" \
+               -F body=@nf-diff-comment.md > /dev/null; then
+          echo "Updated nf-diff comment ${existing}."
+        else
+          gh pr comment "$pr" --repo "$repo" --body-file nf-diff-comment.md
+        fi
 
     - name: Enforce fail-on-change
       if: always()
