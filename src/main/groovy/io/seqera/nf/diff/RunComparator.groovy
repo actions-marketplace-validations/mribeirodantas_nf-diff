@@ -550,7 +550,9 @@ class RunComparator {
                 final va = td.a.numeric(field)
                 final vb = td.b.numeric(field)
                 final pct = Format.pctDelta(va, vb)
-                if( pct == null || Math.abs(pct) < perfThreshold )
+                // An unchanged metric (0.0%) is never a regression, even with
+                // --perf-threshold=0, which means "flag any measurable change" (#19).
+                if( pct == null || pct == 0.0d || Math.abs(pct) < perfThreshold )
                     return
                 out << new DiffResult.RegressionDiff(
                         taskKey  : td.key,
