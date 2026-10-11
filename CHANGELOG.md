@@ -16,6 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pipeline-logs-<run_id>` artifact (14-day retention), making failed PR-diff
   runs easier to debug.
 
+### Changed
+
+- **`--help` now prints usage to stdout and exits `0`**
+  ([#22](https://github.com/mribeirodantas/nf-diff/issues/22)). An explicit
+  `-h`/`--help` used to be treated as a usage error (usage text on stderr, exit
+  code `2`), so it looked like a failure in scripts and CI and could not be
+  piped into a pager. Running the verb with no arguments at all is still a usage
+  error (stderr, exit `2`) and now says so: `no arguments given: expected two
+  run identifiers, or --last`. Scripts that relied on `--help` returning `2`
+  will now see `0`.
+- **A differing number of cached tasks no longer breaks the "identical"
+  verdict** ([#20](https://github.com/mribeirodantas/nf-diff/issues/20)). The
+  run-level *Cached tasks* row is now treated as context (like run name, session
+  id and the per-task cache hash), so a run compared with its own `-resume` is
+  reported identical and no longer trips `--fail-on-change` on that alone. The
+  row is still shown, and `--verbose` still flags it.
+- **`--last` offsets count finished runs only**
+  ([#21](https://github.com/mribeirodantas/nf-diff/issues/21)). Runs still in
+  progress or killed (no `OK`/`ERR` status in `.nextflow/history`) are skipped
+  and logged, so `--last` no longer picks a live run whose cache is locked or a
+  killed run with a partial task set. Failed (`ERR`) runs are still eligible.
+
 ### Fixed
 
 - **`--format=json` no longer crashes when a task metric grows from a zero
@@ -26,6 +48,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regressions are now emitted with `"pctDelta": null` and a new
   `"unbounded": true` flag (direction is still given by `"regression"`); finite
   deltas are unchanged and carry `"unbounded": false`.
+- **The HTML regression chart no longer collapses to 1px bars when a delta is
+  unbounded** ([#8](https://github.com/mribeirodantas/nf-diff/issues/8)). The
+  chart was scaled by the largest absolute change, which became `Infinity`
+  whenever a metric grew from a zero baseline, so every finite bar shrank to
+  nothing and the unbounded bar became `NaN`. Scaling now uses finite deltas
+  only, and unbounded ones are drawn at full length (still labelled
+  `+∞%`/`−∞%`).
+- **`--perf-threshold=0` no longer flags unchanged metrics**
+  ([#19](https://github.com/mribeirodantas/nf-diff/issues/19)). A `0.0%` change
+  was never below a zero threshold, so every unchanged metric was listed as a
+  regression; `0` now means "flag any measurable change", as documented.
+- **GitHub Action: the `format` input is case-insensitive**
+  ([#23](https://github.com/mribeirodantas/nf-diff/issues/23)), matching the
+  plugin. Previously `format: JSON` wrote the report to `nf-diff-report.html`
+  (then overwritten by the HTML render) and left the `identical` output empty,
+  and `format: Markdown` was posted to the PR as a fenced text block.
+- **GitHub Action: the report artifact is no longer the whole working directory
+  when the diff step fails early**
+  ([#18](https://github.com/mribeirodantas/nf-diff/issues/18)). If the diff step
+  never ran or exited before recording its report paths (e.g. missing
+  `run-a`/`run-b`), the upload paths collapsed to `<dir>/`; the upload is now
+  skipped in that case.
+- **GitHub Action: the sticky PR comment no longer overwrites unrelated
+  comments** ([#11](https://github.com/mribeirodantas/nf-diff/issues/11)). It
+  used `gh pr comment --edit-last`, which edits the token's most recent comment
+  of any kind (e.g. a coverage bot's). The action now updates the latest comment
+  carrying the `<!-- nf-diff -->` marker, and posts a new one if none is found
+  or the update fails.
+- **CI: the nf-diff dogfood workflow passes again**
+  ([#10](https://github.com/mribeirodantas/nf-diff/issues/10)). A temporary
+  forced task failure, added to exercise the failure log-collection steps, had
+  been left in the demo pipeline, so the PR-diff check failed on every pull
+  request.
 
 ## [0.9.1] - 2026-09-21
 
