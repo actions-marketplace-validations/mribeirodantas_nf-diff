@@ -50,6 +50,37 @@ class RunComparatorTest extends Specification {
                 tasks: tasks )
     }
 
+    def 'retried attempts are collapsed to the final attempt, recorded as a warning and kept in failures'() {
+        given:
+        def a = snap('runA', [
+                task(process: 'FOO', name: 'FOO (1)', hash: 'aa', status: 'FAILED', exit: '1', raw: [attempt: 1]),
+                task(process: 'FOO', name: 'FOO (1)', hash: 'bb', status: 'COMPLETED', exit: '0', raw: [attempt: 2]) ])
+        def b = snap('runB', [
+                task(process: 'FOO', name: 'FOO (1)', hash: 'bb', status: 'COMPLETED', exit: '0', raw: [attempt: 2]) ])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then:
+        diff.tasks.size() == 1
+        diff.tasks[0].a.hash == 'bb'
+        diff.warnings.any { it.contains('multiple attempts') && it.contains('FOO (1)') }
+        diff.failuresA.size() == 1
+        diff.failuresA[0].attempt == 1L
+    }
+
+    def 'warns when a process has several untagged tasks'() {
+        given:
+        def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)'), task(process: 'FOO', name: 'FOO (2)')])
+        def b = snap('runB', [task(process: 'FOO', name: 'FOO (1)'), task(process: 'FOO', name: 'FOO (2)')])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then:
+        diff.warnings.any { it.contains('FOO') && it.contains("'tag'") }
+    }
+
     def 'classifies added, removed, changed and unchanged tasks'() {
         given:
         def a = snap('runA', [

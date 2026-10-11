@@ -69,6 +69,30 @@ class RunSnapshotTest extends Specification {
         s.tasksByKey()['ALIGN (1)'].is(a)
     }
 
+    def 'tasksByKey keeps the final attempt of retried tasks'() {
+        given:
+        def first = task('FOO', 'FOO (1)', [hash: 'aa', raw: [attempt: 1]])
+        def last = task('FOO', 'FOO (1)', [hash: 'bb', raw: [attempt: 2]])
+        def s = snapshot([last, first])
+
+        expect:
+        s.tasksByKey().size() == 1
+        s.tasksByKey()['FOO (1)'].is(last)
+        s.attemptCounts() == ['FOO (1)': 2]
+    }
+
+    def 'positionallyMatchedProcesses flags processes with several untagged tasks'() {
+        given:
+        def s = snapshot([
+                task('FOO', 'FOO (1)'), task('FOO', 'FOO (2)'),
+                task('BAR', 'BAR (1)'),
+                task('TAGGED', 'TAGGED (x)', [tag: 'x']), task('TAGGED', 'TAGGED (y)', [tag: 'y']),
+                task('RETRY', 'RETRY (1)'), task('RETRY', 'RETRY (1)') ])
+
+        expect:
+        s.positionallyMatchedProcesses() == ['FOO'] as Set
+    }
+
     def 'totalRealtimeMillis sums every task realtime'() {
         given:
         def s = snapshot([
