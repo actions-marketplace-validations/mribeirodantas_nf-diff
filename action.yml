@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'Report format: md (markdown, default), html, or json.'
+    description: 'Report format: md (markdown, default), html, or json. Case-insensitive.'
     required: false
     default: 'md'
   output:
@@ -182,6 +182,11 @@ runs:
         set -uo pipefail
 
         fmt='${{ inputs.format }}'
+        # Normalise exactly as nf-diff does (case-insensitive; markdown == md) so
+        # the default extension, the HTML-report reuse and the JSON 'identical'
+        # parse all agree with what the plugin actually rendered.
+        fmt="$(printf '%s' "$fmt" | tr '[:upper:]' '[:lower:]')"
+        [[ "$fmt" == "markdown" ]] && fmt='md'
         out='${{ inputs.output }}'
         if [[ -z "$out" ]]; then
           case "$fmt" in
@@ -242,7 +247,7 @@ runs:
         code=$?
 
         html_out="nf-diff-report.html"
-        if [[ "$fmt" == "html" || "$fmt" == "HTML" ]]; then
+        if [[ "$fmt" == "html" ]]; then
           html_out="$out"
         elif [[ $code -eq 0 || $code -eq 3 ]]; then
           # If primary format is not HTML and the diff succeeded/deferred,
@@ -294,6 +299,9 @@ runs:
         set -uo pipefail
         report='${{ steps.diff.outputs.report-path }}'
         fmt='${{ inputs.format }}'
+        # Same normalisation as the Run nf-diff step (case-insensitive; markdown == md).
+        fmt="$(printf '%s' "$fmt" | tr '[:upper:]' '[:lower:]')"
+        [[ "$fmt" == "markdown" ]] && fmt='md'
 
         if [[ ! -f "$report" ]]; then
           echo "::warning::nf-diff report not found at $report; skipping PR comment."
