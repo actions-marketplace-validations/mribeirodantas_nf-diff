@@ -22,7 +22,10 @@ import java.nio.file.Paths
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import nextflow.cli.CliOptions
+import nextflow.cli.CmdRun
 import nextflow.config.ConfigBuilder
+import nextflow.scm.AssetManager
 
 /**
  * Resolves the effective Nextflow configuration for a run and flattens it to a
@@ -63,15 +66,27 @@ class ConfigLoader {
      * @throws Exception if the config files cannot be parsed (callers should
      *         catch and record this as a note rather than fail the whole diff)
      */
-    Map<String,String> resolve(String command, Path baseDir) {
+    Map<String,String> resolve(String command, Path baseDir, String revision = null) {
         final dir = (baseDir ?: Paths.get('.')).toAbsolutePath().normalize()
         final profile = CommandParams.parse(command).get('-profile')
-        final userConfigs = configFilesFrom(command, dir)
+        final userConfigs = configFilesFrom(command, dir, ['-c', '-config'])
+        final replaceConfigs = configFilesFrom(command, dir, ['-C'])
+        final projectDir = assetDir(command, dir, revision) ?: dir
+        log.debug "nf-diff: resolving config for '${CommandParams.projectName(command)}' (revision '${revision}') from ${projectDir}"
+
+        final cliOpts = new CliOptions()
+        if( replaceConfigs )
+            cliOpts.config = replaceConfigs.collect { Path p -> p.toString() }
+
+        final run = new CmdRun()
+        run.params = cliParams(command, dir)
 
         final builder = new ConfigBuilder()
                 .setShowClosures(true)
                 .setStripSecrets(true)
-                .setBaseDir(dir)
+                .setOptions(cliOpts)
+                .setCmdRun(run)
+                .setBaseDir(projectDir)
                 .setCurrentDir(dir)
         if( profile )
             builder.setProfile(profile)
@@ -89,14 +104,14 @@ class ConfigLoader {
      * command, in order, resolving relative paths against {@code baseDir} and
      * keeping only those that currently exist on disk.
      */
-    private static List<Path> configFilesFrom(String command, Path baseDir) {
+    private static List<Path> configFilesFrom(String command, Path baseDir, List<String> flags) {
         final paths = new ArrayList<Path>()
         final tokens = CommandParams.tokenize(command)
         int i = 0
         while( i < tokens.size() ) {
             final tok = tokens[i]
             String value = null
-            if( tok == '-c' || tok == '-config' ) {
+            if( flags.contains(tok) ) {
                 // Consume the following token as the config path only when it is
                 // not itself an option — otherwise `-c -resume` would misread
                 // `-resume` as a filename (and then silently drop it).
@@ -106,11 +121,10 @@ class ConfigLoader {
                     i++
                 }
             }
-            else if( tok?.startsWith('-c=') ) {
-                value = tok.substring('-c='.length())
-            }
-            else if( tok?.startsWith('-config=') ) {
-                value = tok.substring('-config='.length())
+            else {
+                final flag = flags.find { String f -> tok?.startsWith(f + '=') }
+                if( flag )
+                    value = tok.substring(flag.length() + 1)
             }
             if( value ) {
                 final p = Paths.get(value)
@@ -123,6 +137,81 @@ class ConfigLoader {
             i++
         }
         return paths
+    }
+
+    /**
+     * Local asset checkout of a remote pipeline, or null for local scripts. Newer
+     * Nextflow keeps one clone per commit under .repos/org/repo/clones/<commit>, so
+     * the run's own revision is preferred; otherwise the legacy assets/org/repo
+     * checkout is used (best-effort: it may be on a different revision).
+     */
+    private static Path assetDir(String command, Path baseDir, String revision = null) {
+        final name = CommandParams.projectName(command)
+        if( !name || name.endsWith('.nf') || Files.exists(baseDir.resolve(name)) || !name.contains('/') )
+            return null
+        try {
+            final clone = cloneFor(assetsRoot(), name, revision)
+            if( clone != null )
+                return clone
+            final local = new AssetManager(name).getLocalPath()
+            if( local != null && local.exists() )
+                return local.toPath()
+        }
+        catch( Exception e ) {
+            log.debug "nf-diff: could not resolve asset dir for '${name}': ${e.message}"
+        }
+        return null
+    }
+
+    /** The per-commit clone .repos/<name>/clones/<revision*> under an assets root, or null. */
+    static Path cloneFor(Path assetsRoot, String name, String revision) {
+        final rev = revision?.trim()
+        if( !rev )
+            return null
+        final clones = assetsRoot.resolve('.repos').resolve(name).resolve('clones')
+        if( !Files.isDirectory(clones) )
+            return null
+        return (Path) Files.list(clones).withCloseable { s ->
+            s.filter { Path p -> Files.isDirectory(p) && p.fileName.toString().startsWith(rev) }.findFirst().orElse(null)
+        }
+    }
+
+    private static Path assetsRoot() {
+        final assets = System.getenv('NXF_ASSETS')
+        if( assets )
+            return Paths.get(assets)
+        final home = System.getenv('NXF_HOME') ?: System.getProperty('user.home') + '/.nextflow'
+        return Paths.get(home).resolve('assets')
+    }
+
+    /**
+     * A note when the legacy asset checkout is on a different revision than the
+     * run's {@code -r}; null when they match, no {@code -r} was given, or the
+     * pipeline is not a legacy local asset (per-commit clones always match).
+     */
+    static String revisionNote(String command, Path baseDir) {
+        final wanted = CommandParams.parse(command).get('-r')
+        if( !wanted || wanted == 'true' || assetDir(command, baseDir) == null )
+            return null
+        try {
+            final current = new AssetManager(CommandParams.projectName(command)).getCurrentRevision()
+            if( current && current != wanted )
+                return "pipeline config was read from the local checkout at '${current}', but the run used -r ${wanted}".toString()
+        }
+        catch( Exception e ) {
+            log.debug "nf-diff: could not read asset revision: ${e.message}"
+        }
+        return null
+    }
+
+    /** Pipeline params (--name) of the run, including -params-file contents, without the leading dashes. */
+    private static Map<String,String> cliParams(String command, Path baseDir) {
+        final out = new LinkedHashMap<String,String>()
+        CommandParams.resolve(command, baseDir).values.each { String k, String v ->
+            if( CommandParams.isPipelineParam(k) )
+                out[k.substring(2)] = v
+        }
+        return out
     }
 
     /**

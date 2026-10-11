@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The configuration layer now loads a remote pipeline's own `nextflow.config`,
+  applies CLI params, and honours `-C`.** Config for `nextflow run org/repo` is
+  read from the local asset checkout (`~/.nextflow/assets`), `--params` and
+  `-params-file` values are passed to `ConfigBuilder` so `params.*`-dependent
+  expressions resolve to the run's values, and `-C` replaces the default config
+  files. Each run's own commit clone (`.repos/<org>/<repo>/clones/<commit>`) is
+  used when present, falling back to the legacy `assets/<org>/<repo>` checkout;
+  when that checkout is on a different revision than the run's `-r`, the config
+  note says so.
 - **The config-provenance "different git revision" warning no longer fires on
   practically every comparison**
   ([#9](https://github.com/mribeirodantas/nf-diff/issues/9)). It compared each
