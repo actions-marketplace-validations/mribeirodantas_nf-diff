@@ -367,6 +367,46 @@ class LineageStoreTest extends Specification {
         env.fusionEnabled == Boolean.TRUE
     }
 
+    def 'environmentForSession selects the WorkflowRun matching the run name'() {
+        given: 'two runs of one (resumed) session'
+        def store = newStore()
+        def sid = UUID.randomUUID()
+        record(store, 'wfA', workflowRunNamed(sid.toString(), 'run_a', [nextflow: [version: '25.04.0']]))
+        record(store, 'wfB', workflowRunNamed(sid.toString(), 'run_b', [nextflow: [version: '26.04.1']]))
+        def ls = LineageStore.locate(tmp)
+
+        expect:
+        ls.environmentForSession(sid, 'run_a').nextflowVersion == '25.04.0'
+        ls.environmentForSession(sid, 'run_b').nextflowVersion == '26.04.1'
+    }
+
+    def 'edgesForSession scopes TaskRuns to the named run'() {
+        given:
+        def store = newStore()
+        def sid = UUID.randomUUID().toString()
+        record(store, 'wfA', workflowRunNamed(sid, 'run_a', [:]))
+        record(store, 'wfB', workflowRunNamed(sid, 'run_b', [:]))
+        record(store, 'a1', taskRunOf(sid, 'A', 'lid://wfA', []))
+        record(store, 'a2', taskRunOf(sid, 'B', 'lid://wfA', ['lid://a1/out']))
+        record(store, 'b1', taskRunOf(sid, 'A', 'lid://wfB', []))
+        record(store, 'b2', taskRunOf(sid, 'C', 'lid://wfB', ['lid://b1/out']))
+        def ls = LineageStore.locate(tmp)
+
+        expect:
+        edgeStrings(ls.edgesForSession(UUID.fromString(sid), 'run_a')) == ['A->B'] as Set
+        edgeStrings(ls.edgesForSession(UUID.fromString(sid), 'run_b')) == ['A->C'] as Set
+    }
+
+    private Map workflowRunNamed(String session, String runName, Map metadata) {
+        return [version: 'lineage/v1beta1', kind: 'WorkflowRun',
+                spec: [sessionId: session, runName: runName, metadata: metadata]]
+    }
+
+    private Map taskRunOf(String session, String name, String workflowRun, List input) {
+        return [version: 'lineage/v1beta1', kind: 'TaskRun',
+                spec: [sessionId: session, name: name, workflowRun: workflowRun, input: input]]
+    }
+
     def 'environmentForSession tolerates missing sub-objects, leaving fields null'() {
         given: 'a WorkflowRun whose metadata has no nextflow/wave/fusion blocks'
         def store = newStore()

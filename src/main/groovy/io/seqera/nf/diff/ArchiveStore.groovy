@@ -35,8 +35,9 @@ import groovy.util.logging.Slf4j
  * history + cache) has been deleted.
  *
  * <h2>Layout</h2>
- * Each run is written as a single JSON document {@code <dir>/<sessionId>.json}
- * (falling back to a sanitised run name when a session id is absent). This is
+ * Each run is written as a single JSON document {@code <dir>/<sessionId>_<runName>.json}
+ * (the session id alone when the run name is absent; legacy {@code <sessionId>.json}
+ * entries are still read; a sanitised run name when a session id is absent). This is
  * the <em>lightweight</em> archive: it carries the run-level metadata and every
  * task's trace fields, which is everything the default comparison
  * (metadata, parameters, config, process topology, per-task detail, performance)
@@ -44,7 +45,7 @@ import groovy.util.logging.Slf4j
  *
  * <p>In <em>complete</em> mode the store additionally copies each task's regular
  * work-directory files (its outputs and the {@code .command.out/.err/.log}
- * logs) into {@code <dir>/<sessionId>/tasks/<hash>/} and rewrites the stored
+ * logs) into {@code <dir>/<sessionId>_<runName>/tasks/<hash>/} and rewrites the stored
  * task's {@code workdir} to point there, so {@link OutputComparator} and
  * {@link LogComparator} work verbatim against the archived run. Staged input
  * symlinks are intentionally not copied — they would dangle once the originals
@@ -116,6 +117,12 @@ class ArchiveStore {
         final json = JsonOutput.prettyPrint(JsonOutput.toJson(toMap(snap, complete)))
         final file = dir.resolve("${key}.json")
         Files.write(file, json.getBytes('UTF-8'))
+        // Drop a legacy <sessionId>.json for this same run so it is not listed twice.
+        if( snap.sessionId ) {
+            final legacy = dir.resolve("${snap.sessionId}.json")
+            if( Files.exists(legacy) && legacy != file && readRunName(legacy) == snap.runName )
+                Files.deleteIfExists(legacy)
+        }
         log.debug "nf-diff: archived run '${snap.runName}' (${key}, ${complete ? 'complete' : 'lightweight'}) to ${file}"
         return snap
     }
@@ -137,6 +144,8 @@ class ArchiveStore {
             throw new IllegalArgumentException("Run '${idOrName}' not found in archive ${dir}")
         if( matches.size() > 1 ) {
             final labels = matches.collect { RunSnapshot s -> s.label() }.join(', ')
+            if( matches.collect { RunSnapshot s -> s.sessionId }.unique().size() == 1 )
+                throw new IllegalArgumentException("Session '${idOrName}' has ${matches.size()} runs in archive (${matches.collect { RunSnapshot s -> s.runName }.join(', ')}); pass the run name.")
             throw new IllegalArgumentException("Run '${idOrName}' is ambiguous in archive — matched ${matches.size()} entries: ${labels}. Use a longer session id.")
         }
         final snap = matches.first()
@@ -190,8 +199,21 @@ class ArchiveStore {
 
     // --- serialization ----------------------------------------------------
 
+    private static String readRunName(Path f) {
+        try {
+            final parsed = new JsonSlurper().parse(f.toFile())
+            return parsed instanceof Map ? ((Map) parsed).get('runName') as String : null
+        }
+        catch( Exception e ) {
+            return null
+        }
+    }
+
     private static String storageKey(RunSnapshot s) {
-        return s.sessionId ? s.sessionId.toString() : sanitize(s.runName)
+        if( !s.sessionId )
+            return sanitize(s.runName)
+        // -resume reuses the session id, so the run name keeps resumed runs apart.
+        return s.runName ? "${s.sessionId}_${sanitize(s.runName)}".toString() : s.sessionId.toString()
     }
 
     /** Replace anything but a safe filename character so ids map to valid paths. */

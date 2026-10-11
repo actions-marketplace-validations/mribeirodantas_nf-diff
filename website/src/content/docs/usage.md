@@ -194,7 +194,7 @@ diff {
 - **`mode`** — `'lightweight'` stores only run-level metadata and per-task trace fields (enough for the summary, performance, and resource layers). `'complete'` additionally copies each task's output files and `.command.out`/`.command.err`/`.command.log` into the archive, so the output- and log-diff layers keep working after the work directories are deleted. Staged **input** symlinks are intentionally *not* copied, to avoid dragging large upstream inputs into the archive.
 - **`dir`** — Where snapshots are written. Resolution order (shared by the writer and the `diff` reader, so a custom location stays consistent): the explicit config value / `--archive-dir`, then the `NXF_DIFF_ARCHIVE_DIR` environment variable, then the default `$NXF_HOME/nf-diff/archive` (falling back to `~/.nextflow/nf-diff/archive` when `NXF_HOME` is unset).
 
-Each run is stored as `<sessionId>.json`; in `complete` mode its task files live alongside under `<sessionId>/tasks/`. Reading is automatic — `diff` checks the local history first and only consults the archive as a fallback — but you can point at a non-default location explicitly with `--archive-dir=<dir>`:
+Each run is stored as `<sessionId>_<runName>.json` (`-resume` runs share a session id, so the run name keeps them apart; legacy `<sessionId>.json` entries are still read); in `complete` mode its task files live alongside under `<sessionId>_<runName>/tasks/`. Reading is automatic — `diff` checks the local history first and only consults the archive as a fallback — but you can point at a non-default location explicitly with `--archive-dir=<dir>`:
 
 ```bash
 # On the machine that ran the pipeline (with diff.archive.enabled = true), the run

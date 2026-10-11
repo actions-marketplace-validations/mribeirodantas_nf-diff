@@ -106,6 +106,10 @@ class RunLoader {
         if( !matches )
             throw new IllegalArgumentException("Run '${idOrName}' not found in ${historyPath()}. Recent runs: ${recentNamesHint(history)}")
         if( matches.size() > 1 ) {
+            if( matches.collect { HistoryFile.Record r -> r.sessionId }.unique().size() == 1 ) {
+                final names = matches.collect { HistoryFile.Record r -> r.runName }.join(', ')
+                throw new AmbiguousRunException("Session ${matches.first().sessionId} has ${matches.size()} runs (${names}); pass the run name.")
+            }
             final labels = matches.collect { HistoryFile.Record r -> "${r.runName} (${shortId(r.sessionId)})" }.join(', ')
             throw new AmbiguousRunException("Run '${idOrName}' is ambiguous — matched ${matches.size()} entries: ${labels}. Use a longer session id.")
         }
@@ -163,7 +167,7 @@ class RunLoader {
         final store = LineageStore.locate(nextflowDir.getParent())
         if( store == null )
             return
-        final env = store.environmentForSession(snapshot.sessionId)
+        final env = store.environmentForSession(snapshot.sessionId, snapshot.runName)
         if( env == null )
             return
         snapshot.pipeline        = env.pipeline

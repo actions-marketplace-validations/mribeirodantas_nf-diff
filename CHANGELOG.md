@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-resume` runs sharing a session id are now archived, resolved and enriched
+  independently** ([#14](https://github.com/mribeirodantas/nf-diff/issues/14)).
+  Archive entries are keyed `<sessionId>_<runName>` (legacy `<sessionId>.json`
+  still readable), lineage environment and DAG edges are scoped to the named run,
+  and passing a session id that spans several runs now asks for the run name
+  instead of a longer session id.
+
 ### Added
 
 - **CI: the nf-diff dogfood workflow now tests the PR's own plugin build**
