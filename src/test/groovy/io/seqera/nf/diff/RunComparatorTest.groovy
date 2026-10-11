@@ -191,6 +191,29 @@ class RunComparatorTest extends Specification {
         diff.showObvious
     }
 
+    def 'a differing cached-task count is context, not a change (#20)'() {
+        given: 'run B is a -resume of run A: same task, now served from cache'
+        def ta = task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED'])
+        def tb = task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED'])
+        tb.cached = true
+        def a = snap('runA', [ta])
+        def b = snap('runB', [tb])
+
+        when:
+        def quiet = new RunComparator().compare(a, b)
+        def verbose = new RunComparator(new CompareOptions(showObvious: true)).compare(a, b)
+
+        then: 'the row is shown but marked obvious, so the runs are identical by default'
+        def row = quiet.metadata.find { it.field == 'Cached tasks' }
+        row.changed
+        row.obvious
+        quiet.identical
+
+        and: '--verbose still flags it'
+        verbose.metadata.find { it.field == 'Cached tasks' }.isHighlighted(true)
+        !verbose.identical
+    }
+
     def 'meaningful differences are still flagged in default mode'() {
         given: 'tasks differing in a meaningful field (exit) and an obvious one'
         def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)',

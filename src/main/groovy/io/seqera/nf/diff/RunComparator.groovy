@@ -108,7 +108,11 @@ class RunComparator {
      */
     static final Set<String> OBVIOUS_METADATA = [
             'Run name', 'Session ID', 'Launched', 'Wall duration', 'Total task realtime', 'Command',
-            'Nextflow build'
+            'Nextflow build',
+            // How many tasks were served from cache is an execution detail of
+            // -resume (itself an obvious option), not a change in what ran or
+            // produced, so a run compared with its own resume stays identical (#20).
+            'Cached tasks'
     ] as Set
 
     /**
