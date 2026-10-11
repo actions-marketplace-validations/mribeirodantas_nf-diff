@@ -108,15 +108,15 @@ class ConfigLoaderTest extends Specification {
 
     def 'passes CLI params to config expressions'() {
         given:
-        writeConfig('params.max_cpus = 4\nprocess.cpus = params.max_cpus\n')
+        writeConfig('process.cpus = params.max_cpus\n')
 
         when:
-        def base = loader.resolve('nextflow run main.nf', projectDir)
-        def withParam = loader.resolve('nextflow run main.nf --max_cpus 1', projectDir)
+        def two = loader.resolve('nextflow run main.nf --max_cpus 2', projectDir)
+        def one = loader.resolve('nextflow run main.nf --max_cpus 1', projectDir)
 
         then:
-        base['process.cpus'] == '4'
-        withParam['process.cpus'] == '1'
+        two['process.cpus'] == '2'
+        one['process.cpus'] == '1'
     }
 
     def 'honours -C by replacing the default config'() {

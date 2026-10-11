@@ -78,8 +78,9 @@ class ConfigLoader {
         if( replaceConfigs )
             cliOpts.config = replaceConfigs.collect { Path p -> p.toString() }
 
+        final params = cliParams(command, dir)
         final run = new CmdRun()
-        run.params = cliParams(command, dir)
+        run.params = params
 
         final builder = new ConfigBuilder()
                 .setShowClosures(true)
@@ -92,11 +93,54 @@ class ConfigLoader {
             builder.setProfile(profile)
         if( userConfigs )
             builder.setUserConfigFiles(userConfigs)
+        applyCliParams(builder, paramsTree(params))
 
         final resolved = builder.buildConfigObject()
         final out = new TreeMap<String,String>()
         flatten('', resolved, out)
         return out
+    }
+
+    /** Nextflow 26.x reads params only via setCliParams (absent in 25.04, which reads CmdRun.params). */
+    private static void applyCliParams(ConfigBuilder builder, Map<String,Object> params) {
+        try {
+            builder.getClass().getMethod('setCliParams', Map).invoke(builder, params)
+        }
+        catch( NoSuchMethodException ignored ) {
+            log.debug 'nf-diff: ConfigBuilder.setCliParams not available; using CmdRun.params'
+        }
+    }
+
+    /** Dotted param keys become nested maps; scalars are typed like Nextflow's CLI. */
+    private static Map<String,Object> paramsTree(Map<String,String> params) {
+        final root = new LinkedHashMap<String,Object>()
+        params.each { String k, String v ->
+            final parts = k.tokenize('.')
+            Map<String,Object> node = root
+            parts.eachWithIndex { String part, int i ->
+                if( i == parts.size() - 1 )
+                    node.put(part, typed(v))
+                else {
+                    def next = node.get(part)
+                    if( !(next instanceof Map) ) {
+                        next = new LinkedHashMap<String,Object>()
+                        node.put(part, next)
+                    }
+                    node = (Map<String,Object>) next
+                }
+            }
+        }
+        return root
+    }
+
+    private static Object typed(String v) {
+        if( v == 'true' || v == 'false' )
+            return Boolean.parseBoolean(v)
+        if( v ==~ /-?\d+/ && v.length() < 18 )
+            return Long.parseLong(v)
+        if( v ==~ /-?\d+\.\d+/ )
+            return Double.parseDouble(v)
+        return v
     }
 
     /**
