@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pipeline-logs-<run_id>` artifact (14-day retention), making failed PR-diff
   runs easier to debug.
 
+### Fixed
+
+- **`--format=json` no longer crashes when a task metric grows from a zero
+  baseline** ([#7](https://github.com/mribeirodantas/nf-diff/issues/7)). A
+  metric going from `0` to a non-zero value (common for `peak_rss` on very short
+  tasks) has an unbounded percentage change, internally `±Infinity`, which
+  `JsonOutput` refuses to serialise, aborting the report with exit code 1. Such
+  regressions are now emitted with `"pctDelta": null` and a new
+  `"unbounded": true` flag (direction is still given by `"regression"`); finite
+  deltas are unchanged and carry `"unbounded": false`.
+
 ## [0.9.1] - 2026-09-21
 
 ### Fixed
