@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tasks sharing a name (retries, untagged tasks) are no longer silently
+  dropped or mismatched.** Retried attempts are collapsed to the final attempt
+  (earlier ones stay in the failure rollup, which now records each failure's
+  `attempt`). A warning, shown in the log and in the HTML, Markdown and JSON
+  reports, is raised when tasks have multiple attempts or when a process has
+  several untagged tasks matched by submission index (set `tag` to match them
+  reliably).
 - **The configuration layer now loads a remote pipeline's own `nextflow.config`,
   applies CLI params, and honours `-C`.** Config for `nextflow run org/repo` is
   read from the local asset checkout (`~/.nextflow/assets`), `--params` and

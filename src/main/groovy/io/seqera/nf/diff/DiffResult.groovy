@@ -261,6 +261,8 @@ class DiffResult {
         String taskKey
         String process
         String tag
+        /** Attempt number, or null when not recorded. */
+        Long attempt
         /** Task status, e.g. {@code FAILED}, {@code ABORTED}. */
         String status
         /** Exit code as recorded, already normalised via {@link DiffResult#normalizeExit}. */
@@ -732,6 +734,9 @@ class DiffResult {
             e.cpuEffA() != null || e.cpuEffB() != null || e.memEffA() != null || e.memEffB() != null
         }
     }
+
+    /** Task-matching caveats (retried attempts, positional matching) the reader should know about. */
+    List<String> warnings = []
 
     /** Failed tasks in run A / run B (status FAILED/ABORTED or a non-zero exit). */
     List<TaskFailure> failuresA = []
