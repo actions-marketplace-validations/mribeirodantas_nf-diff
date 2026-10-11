@@ -73,11 +73,37 @@ class RunSnapshot {
         return tasks.collect { it.process ?: '(unknown)' } as TreeSet
     }
 
-    /** Tasks indexed by their {@link TaskInfo#matchKey()}. */
+    /**
+     * Tasks indexed by their {@link TaskInfo#matchKey()}. Records sharing a key
+     * (retried attempts) are collapsed to the final attempt (highest
+     * {@code attempt}; later record wins ties). Earlier attempts remain in {@link #tasks}.
+     */
     Map<String,TaskInfo> tasksByKey() {
         final map = new LinkedHashMap<String,TaskInfo>()
-        tasks.each { t -> map[t.matchKey()] = t }
+        tasks.each { TaskInfo t ->
+            final key = t.matchKey()
+            final prev = map.get(key)
+            if( prev == null || (t.numeric('attempt') ?: 0L) >= (prev.numeric('attempt') ?: 0L) )
+                map.put(key, t)
+        }
         return map
+    }
+
+    /** Number of task records per match key. */
+    Map<String,Integer> attemptCounts() {
+        final counts = new LinkedHashMap<String,Integer>()
+        tasks.each { TaskInfo t -> counts.merge(t.matchKey(), 1, { Integer x, Integer y -> x + y } as java.util.function.BiFunction<Integer,Integer,Integer>) }
+        return counts
+    }
+
+    /** Processes with more than one untagged task, matched by submission index only. */
+    Set<String> positionallyMatchedProcesses() {
+        final counts = new LinkedHashMap<String,Set<String>>()
+        tasksByKey().values().each { TaskInfo t ->
+            if( !t.tag )
+                counts.computeIfAbsent(t.process ?: '(unknown)', { String k -> new LinkedHashSet<String>() } as java.util.function.Function<String,Set<String>>).add(t.matchKey())
+        }
+        return counts.findAll { k, v -> v.size() > 1 }.keySet() as LinkedHashSet<String>
     }
 
     /** Sum of task realtimes in milliseconds. */

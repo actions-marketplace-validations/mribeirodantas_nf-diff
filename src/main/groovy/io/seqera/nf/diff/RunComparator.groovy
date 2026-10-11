@@ -999,6 +999,16 @@ class RunComparator {
         final mapA = a.tasksByKey()
         final mapB = b.tasksByKey()
 
+        final retried = new LinkedHashSet<String>()
+        [a, b].each { RunSnapshot s -> s.attemptCounts().each { k, n -> if( n > 1 ) retried << k } }
+        if( retried )
+            log.warn "nf-diff: ${retried.size()} task(s) have multiple attempts; comparing the final attempt of each: ${retried.take(5).join(', ')}"
+        final positional = new LinkedHashSet<String>()
+        positional.addAll(a.positionallyMatchedProcesses())
+        positional.addAll(b.positionallyMatchedProcesses())
+        if( positional )
+            log.warn "nf-diff: untagged tasks of ${positional.join(', ')} are matched by submission index, which may differ between runs; set 'tag' on these processes for reliable matching"
+
         // preserve A order first, then B-only tasks
         final keys = new LinkedHashSet<String>()
         keys.addAll(mapA.keySet())
