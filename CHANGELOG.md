@@ -48,6 +48,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+=======
+- **`--only`/`--exclude` now filter the run-level task counts**
+  ([#13](https://github.com/mribeirodantas/nf-diff/issues/13)). "Task count",
+  "Cached tasks" and "Distinct processes" were computed from every task, so
+  changes in filtered-out processes still made the runs non-identical and
+  tripped `--fail-on-change`. Under a filter they are computed from the
+  filtered tasks and labelled "(filtered)".
+- **Tasks sharing a name (retries, untagged tasks) are no longer silently
+  dropped or mismatched.** Retried attempts are collapsed to the final attempt
+  (earlier ones stay in the failure rollup, which now records each failure's
+  `attempt`). A warning, shown in the log and in the HTML, Markdown and JSON
+  reports, is raised when tasks have multiple attempts or when a process has
+  several untagged tasks matched by submission index (set `tag` to match them
+  reliably).
+- **The configuration layer now loads a remote pipeline's own `nextflow.config`,
+  applies CLI params, and honours `-C`.** Config for `nextflow run org/repo` is
+  read from the local asset checkout (`~/.nextflow/assets`), `--params` and
+  `-params-file` values are passed to `ConfigBuilder` so `params.*`-dependent
+  expressions resolve to the run's values, and `-C` replaces the default config
+  files. Each run's own commit clone (`.repos/<org>/<repo>/clones/<commit>`) is
+  used when present, falling back to the legacy `assets/<org>/<repo>` checkout;
+  when that checkout is on a different revision than the run's `-r`, the config
+  note says so.
 - **The config-provenance "different git revision" warning no longer fires on
   practically every comparison**
   ([#9](https://github.com/mribeirodantas/nf-diff/issues/9)). It compared each

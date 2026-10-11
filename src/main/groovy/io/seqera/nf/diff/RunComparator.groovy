@@ -26,6 +26,8 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Function
 
+import java.util.function.Predicate
+
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import io.seqera.nf.diff.DiffResult.FieldDiff
@@ -296,6 +298,7 @@ class RunComparator {
         result.software = compareSoftware(a, b).findAll { DiffResult.SoftwareDiff sd -> filter.accepts(sd.process) }
         result.efficiency = computeEfficiency(a, b).findAll { DiffResult.ProcessEfficiency pe -> filter.accepts(pe.process) }
         result.tasks = compareTasks(a, b).findAll { TaskDiff td -> filter.accepts(td.process()) }
+        computeTaskWarnings(result, a, b)
 
         result.tasks.each { TaskDiff td ->
             switch( td.kind ) {
@@ -592,9 +595,12 @@ class RunComparator {
         diffs << field('Launched', a.timestamp?.toString(), b.timestamp?.toString())
         diffs << field('Wall duration', Format.duration(a.durationMillis), Format.duration(b.durationMillis))
         diffs << field('Total task realtime', Format.duration(a.totalRealtimeMillis()), Format.duration(b.totalRealtimeMillis()))
-        diffs << field('Task count', String.valueOf(a.tasks.size()), String.valueOf(b.tasks.size()))
-        diffs << field('Cached tasks', String.valueOf(a.cachedCount()), String.valueOf(b.cachedCount()))
-        diffs << field('Distinct processes', String.valueOf(a.processNames().size()), String.valueOf(b.processNames().size()))
+        final suffix = filter.isPassThrough() ? '' : ' (filtered)'
+        final ta = a.tasks.findAll { TaskInfo t -> filter.accepts(t.process ?: '(unknown)') }
+        final tb = b.tasks.findAll { TaskInfo t -> filter.accepts(t.process ?: '(unknown)') }
+        diffs << field('Task count' + suffix, String.valueOf(ta.size()), String.valueOf(tb.size()))
+        diffs << field('Cached tasks' + suffix, String.valueOf(ta.count { it.cached }), String.valueOf(tb.count { it.cached }), !filter.isPassThrough())
+        diffs << field('Distinct processes' + suffix, String.valueOf(ta.collect { it.process ?: '(unknown)' }.toSet().size()), String.valueOf(tb.collect { it.process ?: '(unknown)' }.toSet().size()))
         // Nextflow version & runtime environment, recovered from the lineage
         // WorkflowRun record (Nextflow does not persist per-run plugin versions,
         // so those cannot be compared). Each row is added only when at least one
@@ -663,8 +669,8 @@ class RunComparator {
         Map<String,String> cb
         try {
             final loader = new ConfigLoader()
-            ca = loader.resolve(a.command, baseDirA)
-            cb = loader.resolve(b.command, baseDirB)
+            ca = loader.resolve(a.command, baseDirA, a.revisionId)
+            cb = loader.resolve(b.command, baseDirB, b.revisionId)
         }
         catch( Exception e ) {
             log.warn "nf-diff: could not resolve configuration: ${e.message}"
@@ -687,10 +693,17 @@ class RunComparator {
             result.configNote = crossProject
                     ? ('Resolved from the current on-disk config files under ' +
                        "${baseDirA} (run A) and ${baseDirB} (run B), applying each run's " +
-                       '-profile/-c options — not a snapshot of the config at launch time.').toString()
+                       '-profile/-c/-C options, --params and -params-file (plus the pipeline\'s own config for remote pipelines) — not a snapshot of the config at launch time.').toString()
                     : ('Resolved from the current on-disk config files under ' +
-                       "${baseDirA}, applying each run's -profile/-c options — not a " +
-                       'snapshot of the config at launch time.').toString()
+                       "${baseDirA}, applying each run's -profile/-c/-C options, --params and " +
+                       '-params-file (plus the pipeline\'s own config for remote pipelines) — not a snapshot of the config at launch time.').toString()
+
+        final revNotes = [['A', a.command, baseDirA], ['B', b.command, baseDirB]].findResults { List it ->
+            final n = ConfigLoader.revisionNote((String) it[1], (Path) (it[2] ?: java.nio.file.Paths.get('.')))
+            n ? "Run ${it[0]}: ${n}".toString() : null
+        }
+        if( revNotes )
+            result.configNote = result.configNote + ' ' + revNotes.join('; ') + '.'
 
         result.configProvenance = computeConfigProvenance(a, b)
     }
@@ -719,10 +732,13 @@ class RunComparator {
         prov.gitAvailable = crossProject ? (stateA.isRepo() || stateB.isRepo()) : stateA.isRepo()
 
         // Run A side (also the shared tree in same-project mode).
+        final Predicate<String> commitInA = { String rev -> gp.isCommit(baseDirA, rev) } as Predicate<String>
+        final Predicate<String> commitInB = { String rev -> gp.isCommit(baseDirB, rev) } as Predicate<String>
+
         if( stateA.isRepo() ) {
             prov.currentRevision = stateA.headCommit
             prov.workingTreeDirty = stateA.dirty
-            prov.driftedA = revisionDrifted(a.revisionId, stateA.headCommit)
+            prov.driftedA = revisionDrifted(a.revisionId, stateA.headCommit, commitInA)
         }
 
         // Run B side.
@@ -732,27 +748,37 @@ class RunComparator {
             if( stateB.isRepo() ) {
                 prov.currentRevisionB = stateB.headCommit
                 prov.dirtyB = stateB.dirty
-                prov.driftedB = revisionDrifted(b.revisionId, stateB.headCommit)
+                prov.driftedB = revisionDrifted(b.revisionId, stateB.headCommit, commitInB)
             }
         }
         else if( stateA.isRepo() ) {
-            prov.driftedB = revisionDrifted(b.revisionId, stateA.headCommit)
+            prov.driftedB = revisionDrifted(b.revisionId, stateA.headCommit, commitInA)
         }
         return prov
     }
 
     /**
-     * True when a run's recorded git revision is known and differs from the
-     * current working-tree HEAD. Commit ids may be abbreviated (Nextflow can
-     * record a short id), so a shared prefix in either direction counts as a
-     * match. An unknown revision (non-git run) is never treated as drift.
+     * True when a run's recorded revision is a commit of the launch directory's
+     * repository and differs from its current HEAD.
+     *
+     * <p>Nextflow records {@code commitId ?: scriptId} in history, so the value
+     * is frequently NOT a commit of this repo: a local {@code main.nf} run
+     * records a hash of the script text, and a remote/hub pipeline records a
+     * commit of its {@code ~/.nextflow/assets} checkout (#9). Such values carry
+     * no evidence about the launch directory and are never treated as drift;
+     * only a revision that {@code isRepoCommit} confirms is compared. Commit ids
+     * may be abbreviated, so a shared prefix in either direction is a match
+     * (checked first, so the common no-drift case needs no extra git call).
+     * Package-private for unit testing.
      */
-    private static boolean revisionDrifted(String runRevision, String currentHead) {
+    static boolean revisionDrifted(String runRevision, String currentHead, Predicate<String> isRepoCommit) {
         if( !runRevision || !currentHead )
             return false
         final r = runRevision.trim()
         final c = currentHead.trim()
-        return !(c.startsWith(r) || r.startsWith(c))
+        if( !r || c.startsWith(r) || r.startsWith(c) )
+            return false
+        return isRepoCommit != null && isRepoCommit.test(r)
     }
 
     private List<ProcessDiff> compareProcesses(RunSnapshot a, RunSnapshot b) {
@@ -929,6 +955,7 @@ class RunComparator {
                         taskKey: t.matchKey(),
                         process: p,
                         tag    : t.tag,
+                        attempt: t.numeric('attempt'),
                         status : (t.status ?: 'UNKNOWN'),
                         exit   : DiffResult.normalizeExit(t.exit) )
             }
@@ -971,6 +998,29 @@ class RunComparator {
             if( sideA ) g.countA++
             else        g.countB++
         }
+    }
+
+    private void computeTaskWarnings(DiffResult result, RunSnapshot a, RunSnapshot b) {
+        final retried = new LinkedHashSet<String>()
+        [a, b].each { RunSnapshot s ->
+            final procOf = new HashMap<String,String>()
+            s.tasks.each { TaskInfo t -> procOf.put(t.matchKey(), t.process ?: '(unknown)') }
+            s.attemptCounts().each { String k, Integer n ->
+                if( n > 1 && filter.accepts(procOf.get(k)) )
+                    retried << k
+            }
+        }
+        if( retried )
+            result.warnings << "${retried.size()} task(s) have multiple attempts; the final attempt is compared (${retried.take(5).join(', ')}${retried.size() > 5 ? ', ...' : ''}).".toString()
+
+        final positional = new LinkedHashSet<String>()
+        positional.addAll(a.positionallyMatchedProcesses())
+        positional.addAll(b.positionallyMatchedProcesses())
+        final shown = positional.findAll { String p -> filter.accepts(p) }
+        if( shown )
+            result.warnings << "Untagged tasks of ${shown.join(', ')} are matched by submission index, which can differ between runs; set 'tag' on these processes for reliable matching.".toString()
+
+        result.warnings.each { String w -> log.warn "nf-diff: ${w}" }
     }
 
     private List<TaskDiff> compareTasks(RunSnapshot a, RunSnapshot b) {

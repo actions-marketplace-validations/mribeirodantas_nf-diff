@@ -60,6 +60,7 @@ class HtmlReportRenderer {
         renderNav(sb, diff)
         sb << '<main class="wrap">\n'
         renderSummary(sb, diff)
+        renderWarnings(sb, diff)
         renderFailures(sb, diff)
         renderMetadata(sb, diff)
         renderParams(sb, diff)
@@ -330,6 +331,12 @@ ${recNote}  </div>
     }
 
     // -------------------------------------------------------------- failures
+
+    private void renderWarnings(StringBuilder sb, DiffResult diff) {
+        diff.warnings.each { String w ->
+            sb << "  <p class=\"warn-note\"><strong>⚠</strong> ${esc(w)}</p>\n"
+        }
+    }
 
     private void renderFailures(StringBuilder sb, DiffResult diff) {
         if( !diff.hasFailures() )

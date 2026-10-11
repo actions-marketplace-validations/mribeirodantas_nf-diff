@@ -50,6 +50,37 @@ class RunComparatorTest extends Specification {
                 tasks: tasks )
     }
 
+    def 'retried attempts are collapsed to the final attempt, recorded as a warning and kept in failures'() {
+        given:
+        def a = snap('runA', [
+                task(process: 'FOO', name: 'FOO (1)', hash: 'aa', status: 'FAILED', exit: '1', raw: [attempt: 1]),
+                task(process: 'FOO', name: 'FOO (1)', hash: 'bb', status: 'COMPLETED', exit: '0', raw: [attempt: 2]) ])
+        def b = snap('runB', [
+                task(process: 'FOO', name: 'FOO (1)', hash: 'bb', status: 'COMPLETED', exit: '0', raw: [attempt: 2]) ])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then:
+        diff.tasks.size() == 1
+        diff.tasks[0].a.hash == 'bb'
+        diff.warnings.any { it.contains('multiple attempts') && it.contains('FOO (1)') }
+        diff.failuresA.size() == 1
+        diff.failuresA[0].attempt == 1L
+    }
+
+    def 'warns when a process has several untagged tasks'() {
+        given:
+        def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)'), task(process: 'FOO', name: 'FOO (2)')])
+        def b = snap('runB', [task(process: 'FOO', name: 'FOO (1)'), task(process: 'FOO', name: 'FOO (2)')])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then:
+        diff.warnings.any { it.contains('FOO') && it.contains("'tag'") }
+    }
+
     def 'classifies added, removed, changed and unchanged tasks'() {
         given:
         def a = snap('runA', [
@@ -189,6 +220,36 @@ class RunComparatorTest extends Specification {
         diff.tasksUnchanged == 0
         !diff.identical
         diff.showObvious
+    }
+
+    def 'run-level counts respect --only so filtered-out processes do not flip the verdict (#13)'() {
+        given:
+        def foo = { task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED']) }
+        def bar = task(process: 'BAR', name: 'BAR (1)', hash: 'g', display: [status: 'COMPLETED'])
+        def a = snap('runA', [foo(), bar])
+        def b = snap('runB', [foo()])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(filter: ProcessFilter.of(['FOO'], []))).compare(a, b)
+
+        then:
+        diff.identical
+        diff.metadata.find { it.field == 'Task count (filtered)' }.valueA == '1'
+    }
+
+    def 'run-level counts respect --exclude (#13)'() {
+        given:
+        def foo = { task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED']) }
+        def bar = task(process: 'BAR', name: 'BAR (1)', hash: 'g', display: [status: 'COMPLETED'])
+        def a = snap('runA', [foo(), bar])
+        def b = snap('runB', [foo()])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(filter: ProcessFilter.of([], ['BAR']))).compare(a, b)
+
+        then:
+        diff.identical
+        diff.metadata.find { it.field == 'Distinct processes (filtered)' }.valueA == '1'
     }
 
     def 'a differing cached-task count is context, not a change (#20)'() {
@@ -709,14 +770,27 @@ class RunComparatorTest extends Specification {
         return head
     }
 
+    /** Commit a config change on top of the current HEAD and return the new HEAD. */
+    private String commitConfig(String content) {
+        writeConfig(content)
+        gitInProject('commit', '-q', '-am', 'change config')
+        final proc = new ProcessBuilder(['git', 'rev-parse', 'HEAD'] as List<String>)
+                .directory(projectDir.toFile()).start()
+        final head = proc.inputStream.text.trim()
+        proc.errorStream.text
+        assert proc.waitFor() == 0
+        return head
+    }
+
     @spock.lang.Requires({ GitProvenanceTest.isGitAvailable() })
     def 'config provenance warns when a run was launched at a different git revision'() {
-        given: 'a committed config and one run whose recorded revision matches HEAD'
-        def head = initGitWithConfig('process.cpus = 1\n')
+        given: 'run A launched at an older commit of this repo, run B at HEAD'
+        def older = initGitWithConfig('process.cpus = 1\n')
+        def head = commitConfig('process.cpus = 2\n')
         def tasks = [task(process: 'FOO', name: 'FOO (1)', display: [status: 'COMPLETED'])]
         def a = snap('runA', tasks.collect { it }, 'nextflow run main.nf')
         def b = snap('runB', tasks.collect { it }, 'nextflow run main.nf')
-        a.revisionId = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' // different commit
+        a.revisionId = older
         b.revisionId = head
 
         when:
@@ -752,6 +826,79 @@ class RunComparatorTest extends Specification {
         diff.configProvenance.gitAvailable
         !diff.configProvenance.hasWarning()
         diff.configProvenance.warning() == null
+    }
+
+    @spock.lang.Requires({ GitProvenanceTest.isGitAvailable() })
+    def 'a revision that is not a commit of the launch repo is not reported as drift (#9): #desc'() {
+        given: 'a clean git repo and two runs recording a non-commit revision, as Nextflow does'
+        initGitWithConfig('process.cpus = 1\n')
+        def tasks = [task(process: 'FOO', name: 'FOO (1)', display: [status: 'COMPLETED'])]
+        def a = snap('runA', tasks.collect { it }, 'nextflow run main.nf')
+        def b = snap('runB', tasks.collect { it }, 'nextflow run main.nf')
+        a.revisionId = revA
+        b.revisionId = revB
+
+        when:
+        def diff = new RunComparator(new CompareOptions(baseDir: projectDir)).compare(a, b)
+
+        then: 'git is known, but nothing is flagged and no warning is produced'
+        diff.configProvenance.gitAvailable
+        !diff.configProvenance.driftedA
+        !diff.configProvenance.driftedB
+        diff.configProvenance.warning() == null
+
+        where:
+        desc                                    | revA                                       | revB
+        'local scriptId (32-hex script hash)'   | '47e64accfc5d8f61b1a3d9b3e0f1c2a4'         | '47e64accfc5d8f61b1a3d9b3e0f1c2a4'
+        'different scriptIds per run'           | '47e64accfc5d8f61b1a3d9b3e0f1c2a4'         | '0f1e2d3c4b5a69788796a5b4c3d2e1f0'
+        'remote pipeline assets commit'         | '8a7f5c0d3b2e1f4a6c9d8e7b5a4c3d2e1f0a9b8c' | '8a7f5c0d3b2e1f4a6c9d8e7b5a4c3d2e1f0a9b8c'
+        'branch name recorded by an archived -r'| 'main'                                     | 'main'
+    }
+
+    @spock.lang.Requires({ GitProvenanceTest.isGitAvailable() })
+    def 'both runs at the same older commit is reported once, not as differing revisions (#9)'() {
+        given:
+        def older = initGitWithConfig('process.cpus = 1\n')
+        def head = commitConfig('process.cpus = 2\n')
+        def tasks = [task(process: 'FOO', name: 'FOO (1)', display: [status: 'COMPLETED'])]
+        def a = snap('runA', tasks.collect { it }, 'nextflow run main.nf')
+        def b = snap('runB', tasks.collect { it }, 'nextflow run main.nf')
+        a.revisionId = older
+        b.revisionId = older.substring(0, 10) // abbreviated id of the same commit
+
+        when:
+        def diff = new RunComparator(new CompareOptions(baseDir: projectDir)).compare(a, b)
+        def w = diff.configProvenance.warning()
+
+        then:
+        diff.configProvenance.driftedA
+        diff.configProvenance.driftedB
+        w.contains("both runs were launched at the same, different git revision (${older.substring(0, 10)})")
+        w.contains(head.substring(0, 10))
+        !w.contains('A: ')
+    }
+
+    def 'revisionDrifted only flags a confirmed repo commit that differs from HEAD (#9)'() {
+        given:
+        def head = 'cccccccccccccccccccccccccccccccccccccccc'
+        def known = ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'] as Set
+        def isCommit = { String r -> known.any { it.startsWith(r) } } as java.util.function.Predicate<String>
+        def never = { String r -> assert false, 'should not need a git lookup'; false } as java.util.function.Predicate<String>
+
+        expect: 'a real, different commit of the repo is drift'
+        RunComparator.revisionDrifted('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', head, isCommit)
+        RunComparator.revisionDrifted('aaaaaaaaaa', head, isCommit)
+
+        and: 'a value that is not a commit of the repo (scriptId, assets commit) is not'
+        !RunComparator.revisionDrifted('47e64accfc5d8f61b1a3d9b3e0f1c2a4', head, isCommit)
+        !RunComparator.revisionDrifted('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', head, isCommit)
+
+        and: 'matching HEAD (full or abbreviated) or missing values short-circuit without a git call'
+        !RunComparator.revisionDrifted(head, head, never)
+        !RunComparator.revisionDrifted('cccccccccc', head, never)
+        !RunComparator.revisionDrifted(null, head, never)
+        !RunComparator.revisionDrifted('aaaaaaaaaa', null, never)
+        !RunComparator.revisionDrifted('aaaaaaaaaa', head, null)
     }
 
     def 'config provenance reports git unavailable outside a repository'() {
