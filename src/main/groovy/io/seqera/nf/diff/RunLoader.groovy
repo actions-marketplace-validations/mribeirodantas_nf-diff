@@ -186,20 +186,41 @@ class RunLoader {
      *
      * @throws IllegalArgumentException if the offsets are out of range
      *         ({@code backA <= backB} or {@code backB < 0}) or history has fewer
-     *         than {@code backA + 1} runs.
+     *         than {@code backA + 1} finished runs. Unfinished runs (no OK/ERR
+     *         status: still running, or killed) are skipped when counting.
      */
     List<String> lastPair(int backA, int backB = 0) {
         if( backB < 0 )
             throw new IllegalArgumentException("--last run B offset must be >= 0, got ${backB}")
         if( backA <= backB )
             throw new IllegalArgumentException("--last run A must be older than run B (A > B), got A=${backA}, B=${backB}")
-        final all = openHistory().findAll()
+        // Nextflow appends the history row when a run STARTS and only fills in
+        // its status (OK/ERR) when it ends, so a row without one is a run that
+        // is still in progress (its cache is locked) or was killed (its task set
+        // is partial). Offsets therefore count finished runs only (#21).
+        final history = openHistory().findAll()
+        final all = history.findAll { HistoryFile.Record r -> isFinished(r) }
+        final skipped = history.size() - all.size()
+        if( skipped > 0 )
+            log.info "nf-diff: --last skipped ${skipped} unfinished run(s) (in progress or killed): " +
+                    history.findAll { HistoryFile.Record r -> !isFinished(r) }.collect { HistoryFile.Record r -> runId(r) }.join(', ')
         final needed = backA + 1
-        if( all.size() < needed )
-            throw new IllegalArgumentException("--last needs at least ${needed} runs in history (run A is ${backA} back), but only ${all.size()} found in ${historyPath()}")
+        if( all.size() < needed ) {
+            final note = skipped > 0 ? " (${skipped} unfinished run(s) skipped)" : ''
+            throw new IllegalArgumentException("--last needs at least ${needed} finished runs in history (run A is ${backA} back), but only ${all.size()} found in ${historyPath()}${note}")
+        }
         final newer = all.get(all.size() - 1 - backB)
         final older = all.get(all.size() - 1 - backA)
         return [runId(older), runId(newer)]
+    }
+
+    /**
+     * True when a history row records a final status ({@code OK}/{@code ERR}),
+     * i.e. the run finished. Package-private for unit testing.
+     */
+    static boolean isFinished(HistoryFile.Record r) {
+        final s = r?.status?.trim()
+        return s == 'OK' || s == 'ERR'
     }
 
     /** Path to the {@code .nextflow/history} file. */
