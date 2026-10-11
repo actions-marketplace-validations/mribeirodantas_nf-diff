@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI: the nf-diff dogfood workflow now tests the PR's own plugin build**
+  ([#38](https://github.com/mribeirodantas/nf-diff/issues/38)). The *Compare two
+  demo runs* job used to resolve `nf-diff` from the public registry, so its PR
+  comment showed the released plugin's behaviour rather than the code under
+  review. It now builds the plugin from the checkout (`make dev-repo`), points
+  `NXF_PLUGINS_TEST_REPOSITORY` at it for every later step (including the
+  composite action), and fails unless the loaded plugin's classes are
+  byte-identical to the build output. The action itself is unchanged.
 - **CI: pipeline logs are uploaded as a downloadable artifact when the nf-diff
   dogfood workflow fails.** On failure, the workflow now collects the top-level
   `.nextflow.log` and each task's `.command.log`/`.command.err`/`.command.out`
@@ -40,6 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The config-provenance "different git revision" warning no longer fires on
+  practically every comparison**
+  ([#9](https://github.com/mribeirodantas/nf-diff/issues/9)). It compared each
+  run's history `revisionId` with the git `HEAD` of `--dir`, but Nextflow
+  records `commitId ?: scriptId` there: a hash of the script text for a local
+  `nextflow run main.nf`, or a commit of the `~/.nextflow/assets` checkout for a
+  remote pipeline, neither of which is a commit of the launch directory. Drift
+  is now reported only when the recorded revision is a commit of that repository
+  (checked with `git cat-file`) and differs from `HEAD`; other values are not
+  treated as evidence of drift. The dirty-working-tree warning is unchanged.
+  When both runs drifted to the same commit, the warning now names it once
+  instead of implying the runs differ (`A: x, B: x`).
 - **`--format=json` no longer crashes when a task metric grows from a zero
   baseline** ([#7](https://github.com/mribeirodantas/nf-diff/issues/7)). A
   metric going from `0` to a non-zero value (common for `peak_rss` on very short
