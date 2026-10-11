@@ -40,6 +40,7 @@ class MarkdownReportRenderer {
         final sb = new StringBuilder()
         renderHeader(sb, diff)
         renderRuns(sb, diff)
+        renderWarnings(sb, diff)
         renderFailures(sb, diff)
         renderMetadata(sb, diff)
         renderParams(sb, diff)
@@ -89,6 +90,10 @@ class MarkdownReportRenderer {
         row(sb, 'Tasks', a.tasks.size().toString(), b.tasks.size().toString())
         row(sb, 'Cached', a.cachedCount().toString(), b.cachedCount().toString())
         sb << '\n'
+    }
+
+    private void renderWarnings(StringBuilder sb, DiffResult diff) {
+        diff.warnings.each { String w -> sb << "> ⚠ ${w}\n\n" }
     }
 
     private void renderFailures(StringBuilder sb, DiffResult diff) {

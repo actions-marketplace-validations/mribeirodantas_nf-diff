@@ -298,6 +298,7 @@ class RunComparator {
         result.software = compareSoftware(a, b).findAll { DiffResult.SoftwareDiff sd -> filter.accepts(sd.process) }
         result.efficiency = computeEfficiency(a, b).findAll { DiffResult.ProcessEfficiency pe -> filter.accepts(pe.process) }
         result.tasks = compareTasks(a, b).findAll { TaskDiff td -> filter.accepts(td.process()) }
+        computeTaskWarnings(result, a, b)
 
         result.tasks.each { TaskDiff td ->
             switch( td.kind ) {
@@ -951,6 +952,7 @@ class RunComparator {
                         taskKey: t.matchKey(),
                         process: p,
                         tag    : t.tag,
+                        attempt: t.numeric('attempt'),
                         status : (t.status ?: 'UNKNOWN'),
                         exit   : DiffResult.normalizeExit(t.exit) )
             }
@@ -995,19 +997,32 @@ class RunComparator {
         }
     }
 
-    private List<TaskDiff> compareTasks(RunSnapshot a, RunSnapshot b) {
-        final mapA = a.tasksByKey()
-        final mapB = b.tasksByKey()
-
+    private void computeTaskWarnings(DiffResult result, RunSnapshot a, RunSnapshot b) {
         final retried = new LinkedHashSet<String>()
-        [a, b].each { RunSnapshot s -> s.attemptCounts().each { k, n -> if( n > 1 ) retried << k } }
+        [a, b].each { RunSnapshot s ->
+            final procOf = new HashMap<String,String>()
+            s.tasks.each { TaskInfo t -> procOf.put(t.matchKey(), t.process ?: '(unknown)') }
+            s.attemptCounts().each { String k, Integer n ->
+                if( n > 1 && filter.accepts(procOf.get(k)) )
+                    retried << k
+            }
+        }
         if( retried )
-            log.warn "nf-diff: ${retried.size()} task(s) have multiple attempts; comparing the final attempt of each: ${retried.take(5).join(', ')}"
+            result.warnings << "${retried.size()} task(s) have multiple attempts; the final attempt is compared (${retried.take(5).join(', ')}${retried.size() > 5 ? ', ...' : ''}).".toString()
+
         final positional = new LinkedHashSet<String>()
         positional.addAll(a.positionallyMatchedProcesses())
         positional.addAll(b.positionallyMatchedProcesses())
-        if( positional )
-            log.warn "nf-diff: untagged tasks of ${positional.join(', ')} are matched by submission index, which may differ between runs; set 'tag' on these processes for reliable matching"
+        final shown = positional.findAll { String p -> filter.accepts(p) }
+        if( shown )
+            result.warnings << "Untagged tasks of ${shown.join(', ')} are matched by submission index, which can differ between runs; set 'tag' on these processes for reliable matching.".toString()
+
+        result.warnings.each { String w -> log.warn "nf-diff: ${w}" }
+    }
+
+    private List<TaskDiff> compareTasks(RunSnapshot a, RunSnapshot b) {
+        final mapA = a.tasksByKey()
+        final mapB = b.tasksByKey()
 
         // preserve A order first, then B-only tasks
         final keys = new LinkedHashSet<String>()

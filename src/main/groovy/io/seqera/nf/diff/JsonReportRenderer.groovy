@@ -46,6 +46,7 @@ class JsonReportRenderer {
                 schemaVersion: '1',
                 generatedAt: diff.generatedAt?.toInstant()?.toString(),
                 identical  : diff.identical,
+                warnings   : diff.warnings,
                 showObvious: diff.showObvious,
                 runA       : runModel(diff.runA),
                 runB       : runModel(diff.runB),
@@ -322,6 +323,7 @@ class JsonReportRenderer {
                 task    : f.taskKey,
                 process : f.process,
                 tag     : f.tag,
+                attempt : f.attempt,
                 status  : f.status,
                 exit    : f.exit,
         ] as Map<String,Object>
