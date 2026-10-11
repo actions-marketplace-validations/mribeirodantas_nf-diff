@@ -145,6 +145,28 @@ class RunLoaderTest extends Specification {
         return new RunLoader(tmp)
     }
 
+    def 'load asks for the run name when a session id matches several resumed runs'() {
+        given: 'two history rows (original + -resume) sharing one session id'
+        def dir = Files.createDirectories(tmp.resolve('.nextflow'))
+        def sid = UUID.randomUUID().toString()
+        def rev = 'afff16a9b45c8e8a4f5a3743780ac13a541762f8'
+        def lines = ['run_a', 'run_b'].withIndex().collect { String name, int i ->
+            ["2026-09-08 12:0${i}:00", '1.5s', name, 'OK', rev, sid, 'nextflow run hello'].join('\t')
+        }
+        Files.write(dir.resolve('history'), (lines.join('\n') + '\n').bytes)
+        def loader = new RunLoader(tmp).withArchiveDir(tmp.resolve('no-archive'))
+
+        when:
+        loader.load(sid)
+
+        then:
+        def e = thrown(RunLoader.AmbiguousRunException)
+        e.message.contains("Session ${sid} has 2 runs")
+        e.message.contains('run_a, run_b')
+        e.message.contains('pass the run name')
+        !e.message.contains('longer session id')
+    }
+
     def 'lastPair with the default B offset compares run A-back against the latest'() {
         given:
         def loader = loaderWithHistory(['r0', 'r1', 'r2', 'r3', 'r4'])

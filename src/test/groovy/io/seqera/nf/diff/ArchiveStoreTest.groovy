@@ -79,9 +79,9 @@ class ArchiveStoreTest extends Specification {
         when:
         store.save(snap, false)
 
-        then: 'the run is written as <sessionId>.json and no task files are copied'
-        Files.exists(dir.resolve("${sid}.json"))
-        !Files.exists(dir.resolve(sid.toString()))
+        then: 'the run is written as <sessionId>_<runName>.json and no task files are copied'
+        Files.exists(dir.resolve("${sid}_happy_curie.json"))
+        !Files.exists(dir.resolve("${sid}_happy_curie"))
 
         when:
         def loaded = store.load('happy_curie')
@@ -208,7 +208,41 @@ class ArchiveStoreTest extends Specification {
 
         then: 'the run is still archived and the workdir is left pointing at the original (no copy dir made)'
         loaded.tasks[0].workdir == missing
-        !Files.exists(dir.resolve(sid.toString()).resolve('tasks'))
+        !Files.exists(dir.resolve("${sid}_degraded".toString()).resolve('tasks'))
+    }
+
+    def 'resumed runs sharing a session id are archived separately'() {
+        given:
+        def store = new ArchiveStore(tmp.resolve('archive'))
+        def sid = UUID.randomUUID()
+
+        when:
+        store.save(sampleSnapshot(sid, 'run_a'), false)
+        store.save(sampleSnapshot(sid, 'run_b'), false)
+
+        then: 'each is loadable by name'
+        store.load('run_a').runName == 'run_a'
+        store.load('run_b').runName == 'run_b'
+        store.list().size() == 2
+
+        when: 'loading by the shared session id'
+        store.load(sid.toString())
+
+        then: 'the error asks for the run name, not a longer id'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('pass the run name')
+    }
+
+    def 'a legacy <sessionId>.json entry is still readable'() {
+        given:
+        def dir = tmp.resolve('archive')
+        def store = new ArchiveStore(dir)
+        def sid = UUID.randomUUID()
+        store.save(sampleSnapshot(sid, 'legacy_run'), false)
+        Files.move(dir.resolve("${sid}_legacy_run.json"), dir.resolve("${sid}.json"))
+
+        expect:
+        store.load('legacy_run').sessionId == sid
     }
 
     def 'complete mode preserves nested sub-directory layout'() {

@@ -94,7 +94,7 @@ class DagComparator {
     RunGraph graphOf(RunSnapshot run, Path projectDir) {
         final store = LineageStore.locate(projectDir)
         if( store != null ) {
-            final edges = store.edgesForSession(run.sessionId)
+            final edges = store.edgesForSession(run.sessionId, run.runName)
             if( edges != null ) {
                 log.debug "nf-diff: reconstructed ${edges.size()} DAG edge(s) for '${run.runName}' from the lineage store"
                 return new RunGraph(edges: edges, source: Source.LINEAGE, anyWorkdir: true, missingWorkdirs: 0)
