@@ -335,6 +335,13 @@ class JsonReportRenderer {
     }
 
     private Map<String,Object> regressionModel(RegressionDiff r) {
+        // Format.pctDelta reports growth from a zero baseline as ±Infinity so it
+        // ranks as the most extreme change, but JSON has no representation for
+        // non-finite numbers (JsonOutput throws on them). Emit null for the
+        // percentage and flag the change as unbounded instead; the direction is
+        // still carried by `regression` (true = Run B larger).
+        final pct = r.pctDelta
+        final unbounded = pct != null && (pct.isInfinite() || pct.isNaN())
         return [
                 task      : r.taskKey,
                 process   : r.process,
@@ -344,7 +351,8 @@ class JsonReportRenderer {
                 valueB    : r.valueB,
                 displayA  : r.displayA,
                 displayB  : r.displayB,
-                pctDelta  : r.pctDelta,
+                pctDelta  : unbounded ? null : pct,
+                unbounded : unbounded,
                 regression: r.regression,
                 sameHash  : r.sameHash,
         ] as Map<String,Object>
