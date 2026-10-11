@@ -375,6 +375,21 @@ class RunComparatorTest extends Specification {
         diff.regressions[0].pctDelta == 10.0d
     }
 
+    def 'a zero perf threshold flags any measurable change but never an unchanged metric (#19)'() {
+        given: 'realtime is unchanged and peak RSS moves by a single byte'
+        def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)', hash: 'h',
+                display: [status: 'COMPLETED'], raw: [realtime: 10_000L, peak_rss: 1_000_000L])])
+        def b = snap('runB', [task(process: 'FOO', name: 'FOO (1)', hash: 'h',
+                display: [status: 'COMPLETED'], raw: [realtime: 10_000L, peak_rss: 1_000_001L])])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(perfThreshold: 0.0d)).compare(a, b)
+
+        then: 'only the metric that actually moved is flagged'
+        diff.regressions*.metric == ['peak_rss']
+        diff.regressions.every { it.pctDelta != 0.0d }
+    }
+
     def 'improvements are captured but not counted as regressions'() {
         given: 'run B is twice as fast'
         def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)', hash: 'h',
