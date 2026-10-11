@@ -222,6 +222,36 @@ class RunComparatorTest extends Specification {
         diff.showObvious
     }
 
+    def 'run-level counts respect --only so filtered-out processes do not flip the verdict (#13)'() {
+        given:
+        def foo = { task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED']) }
+        def bar = task(process: 'BAR', name: 'BAR (1)', hash: 'g', display: [status: 'COMPLETED'])
+        def a = snap('runA', [foo(), bar])
+        def b = snap('runB', [foo()])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(filter: ProcessFilter.of(['FOO'], []))).compare(a, b)
+
+        then:
+        diff.identical
+        diff.metadata.find { it.field == 'Task count (filtered)' }.valueA == '1'
+    }
+
+    def 'run-level counts respect --exclude (#13)'() {
+        given:
+        def foo = { task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED']) }
+        def bar = task(process: 'BAR', name: 'BAR (1)', hash: 'g', display: [status: 'COMPLETED'])
+        def a = snap('runA', [foo(), bar])
+        def b = snap('runB', [foo()])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(filter: ProcessFilter.of([], ['BAR']))).compare(a, b)
+
+        then:
+        diff.identical
+        diff.metadata.find { it.field == 'Distinct processes (filtered)' }.valueA == '1'
+    }
+
     def 'a differing cached-task count is context, not a change (#20)'() {
         given: 'run B is a -resume of run A: same task, now served from cache'
         def ta = task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED'])

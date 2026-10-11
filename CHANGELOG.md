@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--only`/`--exclude` now filter the run-level task counts**
+  ([#13](https://github.com/mribeirodantas/nf-diff/issues/13)). "Task count",
+  "Cached tasks" and "Distinct processes" were computed from every task, so
+  changes in filtered-out processes still made the runs non-identical and
+  tripped `--fail-on-change`. Under a filter they are computed from the
+  filtered tasks and labelled "(filtered)".
 - **Tasks sharing a name (retries, untagged tasks) are no longer silently
   dropped or mismatched.** Retried attempts are collapsed to the final attempt
   (earlier ones stay in the failure rollup, which now records each failure's

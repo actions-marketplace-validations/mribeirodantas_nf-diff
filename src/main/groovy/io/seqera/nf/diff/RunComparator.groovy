@@ -595,9 +595,12 @@ class RunComparator {
         diffs << field('Launched', a.timestamp?.toString(), b.timestamp?.toString())
         diffs << field('Wall duration', Format.duration(a.durationMillis), Format.duration(b.durationMillis))
         diffs << field('Total task realtime', Format.duration(a.totalRealtimeMillis()), Format.duration(b.totalRealtimeMillis()))
-        diffs << field('Task count', String.valueOf(a.tasks.size()), String.valueOf(b.tasks.size()))
-        diffs << field('Cached tasks', String.valueOf(a.cachedCount()), String.valueOf(b.cachedCount()))
-        diffs << field('Distinct processes', String.valueOf(a.processNames().size()), String.valueOf(b.processNames().size()))
+        final suffix = filter.isPassThrough() ? '' : ' (filtered)'
+        final ta = a.tasks.findAll { TaskInfo t -> filter.accepts(t.process ?: '(unknown)') }
+        final tb = b.tasks.findAll { TaskInfo t -> filter.accepts(t.process ?: '(unknown)') }
+        diffs << field('Task count' + suffix, String.valueOf(ta.size()), String.valueOf(tb.size()))
+        diffs << field('Cached tasks' + suffix, String.valueOf(ta.count { it.cached }), String.valueOf(tb.count { it.cached }), !filter.isPassThrough())
+        diffs << field('Distinct processes' + suffix, String.valueOf(ta.collect { it.process ?: '(unknown)' }.toSet().size()), String.valueOf(tb.collect { it.process ?: '(unknown)' }.toSet().size()))
         // Nextflow version & runtime environment, recovered from the lineage
         // WorkflowRun record (Nextflow does not persist per-run plugin versions,
         // so those cannot be compared). Each row is added only when at least one
