@@ -7,14 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-11
+
+### Fixed
+
+- **`-resume` runs sharing a session id are now archived, resolved and enriched
+  independently** ([#14](https://github.com/mribeirodantas/nf-diff/issues/14)).
+  Archive entries are keyed `<sessionId>_<runName>` (legacy `<sessionId>.json`
+  still readable), lineage environment and DAG edges are scoped to the named run,
+  and passing a session id that spans several runs now asks for the run name
+  instead of a longer session id.
+
 ### Added
 
+- **CI: the nf-diff dogfood workflow now tests the PR's own plugin build**
+  ([#38](https://github.com/mribeirodantas/nf-diff/issues/38)). The *Compare two
+  demo runs* job used to resolve `nf-diff` from the public registry, so its PR
+  comment showed the released plugin's behaviour rather than the code under
+  review. It now builds the plugin from the checkout (`make dev-repo`), points
+  `NXF_PLUGINS_TEST_REPOSITORY` at it for every later step (including the
+  composite action), and fails unless the loaded plugin's classes are
+  byte-identical to the build output. The action itself is unchanged.
 - **CI: pipeline logs are uploaded as a downloadable artifact when the nf-diff
   dogfood workflow fails.** On failure, the workflow now collects the top-level
   `.nextflow.log` and each task's `.command.log`/`.command.err`/`.command.out`
   (flattened with the work-dir hash in the filename) and uploads them as the
   `pipeline-logs-<run_id>` artifact (14-day retention), making failed PR-diff
   runs easier to debug.
+
+### Changed
+
+- **`--help` now prints usage to stdout and exits `0`**
+  ([#22](https://github.com/mribeirodantas/nf-diff/issues/22)). An explicit
+  `-h`/`--help` used to be treated as a usage error (usage text on stderr, exit
+  code `2`), so it looked like a failure in scripts and CI and could not be
+  piped into a pager. Running the verb with no arguments at all is still a usage
+  error (stderr, exit `2`) and now says so: `no arguments given: expected two
+  run identifiers, or --last`. Scripts that relied on `--help` returning `2`
+  will now see `0`.
+- **A differing number of cached tasks no longer breaks the "identical"
+  verdict** ([#20](https://github.com/mribeirodantas/nf-diff/issues/20)). The
+  run-level *Cached tasks* row is now treated as context (like run name, session
+  id and the per-task cache hash), so a run compared with its own `-resume` is
+  reported identical and no longer trips `--fail-on-change` on that alone. The
+  row is still shown, and `--verbose` still flags it.
+- **`--last` offsets count finished runs only**
+  ([#21](https://github.com/mribeirodantas/nf-diff/issues/21)). Runs still in
+  progress or killed (no `OK`/`ERR` status in `.nextflow/history`) are skipped
+  and logged, so `--last` no longer picks a live run whose cache is locked or a
+  killed run with a partial task set. Failed (`ERR`) runs are still eligible.
+
+### Fixed
+
+=======
+- **`--only`/`--exclude` now filter the run-level task counts**
+  ([#13](https://github.com/mribeirodantas/nf-diff/issues/13)). "Task count",
+  "Cached tasks" and "Distinct processes" were computed from every task, so
+  changes in filtered-out processes still made the runs non-identical and
+  tripped `--fail-on-change`. Under a filter they are computed from the
+  filtered tasks and labelled "(filtered)".
+- **Tasks sharing a name (retries, untagged tasks) are no longer silently
+  dropped or mismatched.** Retried attempts are collapsed to the final attempt
+  (earlier ones stay in the failure rollup, which now records each failure's
+  `attempt`). A warning, shown in the log and in the HTML, Markdown and JSON
+  reports, is raised when tasks have multiple attempts or when a process has
+  several untagged tasks matched by submission index (set `tag` to match them
+  reliably).
+- **The configuration layer now loads a remote pipeline's own `nextflow.config`,
+  applies CLI params, and honours `-C`.** Config for `nextflow run org/repo` is
+  read from the local asset checkout (`~/.nextflow/assets`), `--params` and
+  `-params-file` values are passed to `ConfigBuilder` so `params.*`-dependent
+  expressions resolve to the run's values, and `-C` replaces the default config
+  files. Each run's own commit clone (`.repos/<org>/<repo>/clones/<commit>`) is
+  used when present, falling back to the legacy `assets/<org>/<repo>` checkout;
+  when that checkout is on a different revision than the run's `-r`, the config
+  note says so.
+- **The config-provenance "different git revision" warning no longer fires on
+  practically every comparison**
+  ([#9](https://github.com/mribeirodantas/nf-diff/issues/9)). It compared each
+  run's history `revisionId` with the git `HEAD` of `--dir`, but Nextflow
+  records `commitId ?: scriptId` there: a hash of the script text for a local
+  `nextflow run main.nf`, or a commit of the `~/.nextflow/assets` checkout for a
+  remote pipeline, neither of which is a commit of the launch directory. Drift
+  is now reported only when the recorded revision is a commit of that repository
+  (checked with `git cat-file`) and differs from `HEAD`; other values are not
+  treated as evidence of drift. The dirty-working-tree warning is unchanged.
+  When both runs drifted to the same commit, the warning now names it once
+  instead of implying the runs differ (`A: x, B: x`).
+- **`--format=json` no longer crashes when a task metric grows from a zero
+  baseline** ([#7](https://github.com/mribeirodantas/nf-diff/issues/7)). A
+  metric going from `0` to a non-zero value (common for `peak_rss` on very short
+  tasks) has an unbounded percentage change, internally `±Infinity`, which
+  `JsonOutput` refuses to serialise, aborting the report with exit code 1. Such
+  regressions are now emitted with `"pctDelta": null` and a new
+  `"unbounded": true` flag (direction is still given by `"regression"`); finite
+  deltas are unchanged and carry `"unbounded": false`.
+- **The HTML regression chart no longer collapses to 1px bars when a delta is
+  unbounded** ([#8](https://github.com/mribeirodantas/nf-diff/issues/8)). The
+  chart was scaled by the largest absolute change, which became `Infinity`
+  whenever a metric grew from a zero baseline, so every finite bar shrank to
+  nothing and the unbounded bar became `NaN`. Scaling now uses finite deltas
+  only, and unbounded ones are drawn at full length (still labelled
+  `+∞%`/`−∞%`).
+- **`--perf-threshold=0` no longer flags unchanged metrics**
+  ([#19](https://github.com/mribeirodantas/nf-diff/issues/19)). A `0.0%` change
+  was never below a zero threshold, so every unchanged metric was listed as a
+  regression; `0` now means "flag any measurable change", as documented.
+- **GitHub Action: the `format` input is case-insensitive**
+  ([#23](https://github.com/mribeirodantas/nf-diff/issues/23)), matching the
+  plugin. Previously `format: JSON` wrote the report to `nf-diff-report.html`
+  (then overwritten by the HTML render) and left the `identical` output empty,
+  and `format: Markdown` was posted to the PR as a fenced text block.
+- **GitHub Action: the report artifact is no longer the whole working directory
+  when the diff step fails early**
+  ([#18](https://github.com/mribeirodantas/nf-diff/issues/18)). If the diff step
+  never ran or exited before recording its report paths (e.g. missing
+  `run-a`/`run-b`), the upload paths collapsed to `<dir>/`; the upload is now
+  skipped in that case.
+- **GitHub Action: user-provided inputs can no longer inject shell commands**
+  ([PR #40](https://github.com/mribeirodantas/nf-diff/pull/40)). Values used by
+  embedded Bash scripts are passed through environment variables, and command
+  arguments are assembled as quoted arrays rather than interpolated into shell
+  source.
+- **GitHub Action: the sticky PR comment no longer overwrites unrelated
+  comments** ([#11](https://github.com/mribeirodantas/nf-diff/issues/11)). It
+  used `gh pr comment --edit-last`, which edits the token's most recent comment
+  of any kind (e.g. a coverage bot's). The action now updates the latest comment
+  carrying the `<!-- nf-diff -->` marker, and posts a new one if none is found
+  or the update fails.
+- **CI: the nf-diff dogfood workflow passes again**
+  ([#10](https://github.com/mribeirodantas/nf-diff/issues/10)). A temporary
+  forced task failure, added to exercise the failure log-collection steps, had
+  been left in the demo pipeline, so the PR-diff check failed on every pull
+  request.
 
 ## [0.9.1] - 2026-09-21
 

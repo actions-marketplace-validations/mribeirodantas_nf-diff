@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'Report format: md (markdown, default), html, or json.'
+    description: 'Report format: md (markdown, default), html, or json. Case-insensitive.'
     required: false
     default: 'md'
   output:
@@ -178,11 +178,35 @@ runs:
         # get.nextflow.io / the runtime honour NXF_VER; keep it aligned with
         # the installed version when the caller pinned one.
         NXF_VER: ${{ inputs.nextflow-version }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_LAST: ${{ inputs.last }}
+        INPUT_RUN_A: ${{ inputs.run-a }}
+        INPUT_RUN_B: ${{ inputs.run-b }}
+        INPUT_ONLY: ${{ inputs.only }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_PERF_THRESHOLD: ${{ inputs.perf-threshold }}
+        INPUT_DIFF_OUTPUTS: ${{ inputs.diff-outputs }}
+        INPUT_DIFF_LOGS: ${{ inputs.diff-logs }}
+        INPUT_DIFF_DAG: ${{ inputs.diff-dag }}
+        INPUT_DIFF_ALL: ${{ inputs.diff-all }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_DIR_A: ${{ inputs.dir-a }}
+        INPUT_DIR_B: ${{ inputs.dir-b }}
+        INPUT_PUBLISHED_A: ${{ inputs.published-a }}
+        INPUT_PUBLISHED_B: ${{ inputs.published-b }}
+        INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
+        INPUT_FAIL_ON_CHANGE: ${{ inputs.fail-on-change }}
       run: |
         set -uo pipefail
 
-        fmt='${{ inputs.format }}'
-        out='${{ inputs.output }}'
+        fmt="$INPUT_FORMAT"
+        # Normalise exactly as nf-diff does (case-insensitive; markdown == md) so
+        # the default extension, the HTML-report reuse and the JSON 'identical'
+        # parse all agree with what the plugin actually rendered.
+        fmt="$(printf '%s' "$fmt" | tr '[:upper:]' '[:lower:]')"
+        [[ "$fmt" == "markdown" ]] && fmt='md'
+        out="$INPUT_OUTPUT"
         if [[ -z "$out" ]]; then
           case "$fmt" in
             md|markdown) ext='md' ;;
@@ -197,7 +221,7 @@ runs:
         # as `nf-diff@<version>:diff`.
         base_args=(nf-diff:diff)
 
-        last='${{ inputs.last }}'
+        last="$INPUT_LAST"
         if [[ -n "$last" ]]; then
           if [[ "$last" == "true" ]]; then
             base_args+=(--last)
@@ -205,8 +229,8 @@ runs:
             base_args+=("--last=${last}")
           fi
         else
-          runa='${{ inputs.run-a }}'
-          runb='${{ inputs.run-b }}'
+          runa="$INPUT_RUN_A"
+          runb="$INPUT_RUN_B"
           if [[ -z "$runa" || -z "$runb" ]]; then
             echo "::error::nf-diff: provide both run-a and run-b, or set the 'last' input." >&2
             exit 2
@@ -214,35 +238,34 @@ runs:
           base_args+=("$runa" "$runb")
         fi
 
-        [[ -n '${{ inputs.only }}' ]]           && base_args+=("--only=${{ inputs.only }}")
-        [[ -n '${{ inputs.exclude }}' ]]        && base_args+=("--exclude=${{ inputs.exclude }}")
-        [[ -n '${{ inputs.perf-threshold }}' ]] && base_args+=("--perf-threshold=${{ inputs.perf-threshold }}")
-        [[ '${{ inputs.diff-outputs }}' == 'true' ]] && base_args+=(--diff-outputs)
-        [[ '${{ inputs.diff-logs }}'    == 'true' ]] && base_args+=(--diff-logs)
-        [[ '${{ inputs.diff-dag }}'     == 'true' ]] && base_args+=(--diff-dag)
-        [[ '${{ inputs.diff-all }}'     == 'true' ]] && base_args+=(--diff-all)
-        [[ '${{ inputs.verbose }}'      == 'true' ]] && base_args+=(--verbose)
-        [[ -n '${{ inputs.dir-a }}' ]]          && base_args+=("--dir-a=${{ inputs.dir-a }}")
-        [[ -n '${{ inputs.dir-b }}' ]]          && base_args+=("--dir-b=${{ inputs.dir-b }}")
-        [[ -n '${{ inputs.published-a }}' ]]    && base_args+=("--published-a=${{ inputs.published-a }}")
-        [[ -n '${{ inputs.published-b }}' ]]    && base_args+=("--published-b=${{ inputs.published-b }}")
+        [[ -n "$INPUT_ONLY" ]] && base_args+=("--only=$INPUT_ONLY")
+        [[ -n "$INPUT_EXCLUDE" ]] && base_args+=("--exclude=$INPUT_EXCLUDE")
+        [[ -n "$INPUT_PERF_THRESHOLD" ]] && base_args+=("--perf-threshold=$INPUT_PERF_THRESHOLD")
+        [[ "$INPUT_DIFF_OUTPUTS" == 'true' ]] && base_args+=(--diff-outputs)
+        [[ "$INPUT_DIFF_LOGS" == 'true' ]] && base_args+=(--diff-logs)
+        [[ "$INPUT_DIFF_DAG" == 'true' ]] && base_args+=(--diff-dag)
+        [[ "$INPUT_DIFF_ALL" == 'true' ]] && base_args+=(--diff-all)
+        [[ "$INPUT_VERBOSE" == 'true' ]] && base_args+=(--verbose)
+        [[ -n "$INPUT_DIR_A" ]] && base_args+=("--dir-a=$INPUT_DIR_A")
+        [[ -n "$INPUT_DIR_B" ]] && base_args+=("--dir-b=$INPUT_DIR_B")
+        [[ -n "$INPUT_PUBLISHED_A" ]] && base_args+=("--published-a=$INPUT_PUBLISHED_A")
+        [[ -n "$INPUT_PUBLISHED_B" ]] && base_args+=("--published-b=$INPUT_PUBLISHED_B")
 
-        extra='${{ inputs.extra-args }}'
-        if [[ -n "$extra" ]]; then
-          # shellcheck disable=SC2206
-          base_args+=($extra)
+        if [[ -n "$INPUT_EXTRA_ARGS" ]]; then
+          IFS=$' \t\n' read -r -d '' -a extra_args < <(printf '%s\0' "$INPUT_EXTRA_ARGS")
+          base_args+=("${extra_args[@]}")
         fi
 
         # Primary command invocation (runs in inputs.dir)
         args=("${base_args[@]}" "--format=${fmt}" "--output=${out}")
-        [[ '${{ inputs.fail-on-change }}' == 'true' ]] && args+=(--fail-on-change)
+        [[ "$INPUT_FAIL_ON_CHANGE" == 'true' ]] && args+=(--fail-on-change)
 
         echo "+ nextflow plugin ${args[*]}"
         nextflow plugin "${args[@]}"
         code=$?
 
         html_out="nf-diff-report.html"
-        if [[ "$fmt" == "html" || "$fmt" == "HTML" ]]; then
+        if [[ "$fmt" == "html" ]]; then
           html_out="$out"
         elif [[ $code -eq 0 || $code -eq 3 ]]; then
           # If primary format is not HTML and the diff succeeded/deferred,
@@ -274,7 +297,10 @@ runs:
 
     - name: Upload report artifact
       id: upload
-      if: always() && inputs.upload-artifact == 'true'
+      # Only once the diff step has recorded its report paths: if it never ran or
+      # bailed out early (e.g. missing run-a/run-b), both outputs are empty and the
+      # paths below collapse to `<dir>/`, which would upload the whole directory.
+      if: always() && inputs.upload-artifact == 'true' && steps.diff.outputs.report-path != ''
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
@@ -290,10 +316,17 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        REPORT_PATH: ${{ steps.diff.outputs.report-path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPOSITORY: ${{ github.repository }}
       run: |
         set -uo pipefail
-        report='${{ steps.diff.outputs.report-path }}'
-        fmt='${{ inputs.format }}'
+        report="$REPORT_PATH"
+        fmt="$INPUT_FORMAT"
+        # Same normalisation as the Run nf-diff step (case-insensitive; markdown == md).
+        fmt="$(printf '%s' "$fmt" | tr '[:upper:]' '[:lower:]')"
+        [[ "$fmt" == "markdown" ]] && fmt='md'
 
         if [[ ! -f "$report" ]]; then
           echo "::warning::nf-diff report not found at $report; skipping PR comment."
@@ -352,18 +385,30 @@ runs:
           } > nf-diff-comment.md
         fi
 
-        pr='${{ github.event.pull_request.number }}'
-        repo='${{ github.repository }}'
-        # Prefer editing our previous comment for idempotency; fall back to
-        # creating a fresh one on older gh versions or when none exists yet.
-        gh pr comment "$pr" --repo "$repo" --edit-last --body-file nf-diff-comment.md \
-          || gh pr comment "$pr" --repo "$repo" --body-file nf-diff-comment.md
+        pr="$PR_NUMBER"
+        repo="$REPOSITORY"
+        # Update our own previous report for idempotency, identified by the
+        # '<!-- nf-diff -->' marker every report starts with. (gh's --edit-last
+        # edits the token's most recent comment of ANY kind, so it could
+        # overwrite an unrelated bot comment posted by another step.)
+        marker='<!-- nf-diff -->'
+        existing=$(gh api --paginate "repos/${repo}/issues/${pr}/comments" \
+          --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" 2>/dev/null | tail -n 1) || existing=''
+        if [[ -n "$existing" ]] \
+          && gh api --method PATCH "repos/${repo}/issues/comments/${existing}" \
+               -F body=@nf-diff-comment.md > /dev/null; then
+          echo "Updated nf-diff comment ${existing}."
+        else
+          gh pr comment "$pr" --repo "$repo" --body-file nf-diff-comment.md
+        fi
 
     - name: Enforce fail-on-change
       if: always()
       shell: bash
+      env:
+        DEFERRED_EXIT: ${{ steps.diff.outputs.deferred-exit }}
       run: |
-        code='${{ steps.diff.outputs.deferred-exit }}'
+        code="$DEFERRED_EXIT"
         if [[ "$code" == "3" ]]; then
           echo "::error::nf-diff: the two runs differ and fail-on-change is set (exit 3)."
           exit 3

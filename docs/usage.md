@@ -44,7 +44,7 @@ nextflow plugin nf-diff:diff <runA> <runB> [options]
 
 | Option                 | Description                                                                                      |
 |------------------------|--------------------------------------------------------------------------------------------------|
-| `-l`, `--last[=N\|A:B]` | Compare recent runs from history. Bare `--last` compares the two most recent runs. `--last=N` compares the run *N* positions before the latest (A) against the latest (B) — note this **skips** the runs in between. Use the explicit `--last=A:B` form to name an exact pair by their offsets back from the latest (`0` = latest, `A > B >= 0`); e.g. `--last=2:1` compares the run two back against the run one back. Cannot be combined with explicit run identifiers. |
+| `-l`, `--last[=N\|A:B]` | Compare recent runs from history. Bare `--last` compares the two most recent runs. `--last=N` compares the run *N* positions before the latest (A) against the latest (B) — note this **skips** the runs in between. Use the explicit `--last=A:B` form to name an exact pair by their offsets back from the latest (`0` = latest, `A > B >= 0`); e.g. `--last=2:1` compares the run two back against the run one back. Offsets count **finished** runs only: runs still in progress or killed (no `OK`/`ERR` status in history) are skipped. Cannot be combined with explicit run identifiers. |
 | `--format=<fmt>`       | Report format: `html` (default), `json`, or `md` (`markdown`)                                    |
 | `--output=<file>`      | Output report path (default: `nf-diff-report.<ext>`, where `<ext>` matches the chosen format). Use `-` to write to stdout. |
 | `--only=<globs>`       | Comma-separated process-name globs; only matching processes/tasks are compared (`*` and `?` supported, `*` spans `:` scopes) |
@@ -64,7 +64,7 @@ nextflow plugin nf-diff:diff <runA> <runB> [options]
 | `--dir-a=<dir>` / `--dir-b=<dir>` | Per-run project directory for run A / run B (its `.nextflow/` history, cache, config and params). Use these to compare a run from one project or checkout against a run from another ("same pipeline, two directories"). Each falls back to `--dir` when omitted. Cannot be combined with `--last`, which needs a single history. |
 | `--archive-dir=<dir>` | Directory of the central run archive to consult when a run is no longer in the local `.nextflow/` history (e.g. its project directory was deleted). Runs land there automatically when a pipeline sets `diff.archive.enabled = true` (see [Central run archive](#central-run-archive)). Defaults to `$NXF_HOME/nf-diff/archive` (or the `NXF_DIFF_ARCHIVE_DIR` environment variable). The local history always takes precedence; the archive is only a fallback. |
 | `-v`, `--verbose`, `--all` | Also diff fields that always change between runs (run name, session id, launch time, work dir, wall/real time, resource usage) |
-| `-h`, `--help`         | Show help                                                                                        |
+| `-h`, `--help`         | Show help (printed to stdout; exits `0`)                                                         |
 
 > **Use the inline `--output=<file>` form (with `=`).** Nextflow's `plugin` launcher swallows space-separated flags such as `-o compare.html` before they reach the plugin.
 
@@ -172,7 +172,7 @@ Enable it in the pipeline's `nextflow.config`. Archiving runs during a normal `n
 
 ```groovy
 plugins {
-    id 'nf-diff@0.9.1'   // required so the end-of-run archive observer is loaded
+    id 'nf-diff@0.9.5'   // required so the end-of-run archive observer is loaded
 }
 
 diff {
@@ -191,7 +191,7 @@ diff {
 - **`mode`** — `'lightweight'` stores only run-level metadata and per-task trace fields (enough for the summary, performance, and resource layers). `'complete'` additionally copies each task's output files and `.command.out`/`.command.err`/`.command.log` into the archive, so the output- and log-diff layers keep working after the work directories are deleted. Staged **input** symlinks are intentionally *not* copied, to avoid dragging large upstream inputs into the archive.
 - **`dir`** — Where snapshots are written. Resolution order (shared by the writer and the `diff` reader, so a custom location stays consistent): the explicit config value / `--archive-dir`, then the `NXF_DIFF_ARCHIVE_DIR` environment variable, then the default `$NXF_HOME/nf-diff/archive` (falling back to `~/.nextflow/nf-diff/archive` when `NXF_HOME` is unset).
 
-Each run is stored as `<sessionId>.json`; in `complete` mode its task files live alongside under `<sessionId>/tasks/`. Reading is automatic — `diff` checks the local history first and only consults the archive as a fallback — but you can point at a non-default location explicitly with `--archive-dir=<dir>`:
+Each run is stored as `<sessionId>_<runName>.json` (`-resume` runs share a session id, so the run name keeps them apart; legacy `<sessionId>.json` entries are still read); in `complete` mode its task files live alongside under `<sessionId>_<runName>/tasks/`. Reading is automatic — `diff` checks the local history first and only consults the archive as a fallback — but you can point at a non-default location explicitly with `--archive-dir=<dir>`:
 
 ```bash
 # On the machine that ran the pipeline (with diff.archive.enabled = true), the run

@@ -60,6 +60,7 @@ class HtmlReportRenderer {
         renderNav(sb, diff)
         sb << '<main class="wrap">\n'
         renderSummary(sb, diff)
+        renderWarnings(sb, diff)
         renderFailures(sb, diff)
         renderMetadata(sb, diff)
         renderParams(sb, diff)
@@ -330,6 +331,12 @@ ${recNote}  </div>
     }
 
     // -------------------------------------------------------------- failures
+
+    private void renderWarnings(StringBuilder sb, DiffResult diff) {
+        diff.warnings.each { String w ->
+            sb << "  <p class=\"warn-note\"><strong>⚠</strong> ${esc(w)}</p>\n"
+        }
+    }
 
     private void renderFailures(StringBuilder sb, DiffResult diff) {
         if( !diff.hasFailures() )
@@ -614,8 +621,15 @@ ${recNote}  </div>
         final rows = regressions.findAll { RegressionDiff r -> r.pctDelta != null }
         if( rows.isEmpty() )
             return ''
+        // Scale against the largest FINITE delta. A metric growing from a zero
+        // baseline has an unbounded (±Infinity) delta; letting it set the scale
+        // would shrink every finite bar to 0 and make its own bar NaN (#8).
+        // Unbounded deltas are instead drawn at the full half-span below.
         double maxAbs = 1.0d
-        rows.each { RegressionDiff r -> maxAbs = Math.max(maxAbs, Math.abs(r.pctDelta)) }
+        rows.each { RegressionDiff r ->
+            if( !r.pctDelta.isInfinite() && !r.pctDelta.isNaN() )
+                maxAbs = Math.max(maxAbs, Math.abs(r.pctDelta))
+        }
 
         final halfSpan = RP_HALF + RP_VAL_W
         final axisX = RP_PAD + RP_LABEL_W + RP_GAP + halfSpan
@@ -636,7 +650,8 @@ ${recNote}  </div>
             final rowY = RP_TOP + RP_PAD + i * RP_ROW_H
             final midY = rowY + (RP_BAR_H / 2 as int) + 4
             final worse = r.pctDelta > 0
-            final barLen = Math.max(1, (int)(Math.abs(r.pctDelta) / maxAbs * RP_HALF))
+            final unbounded = r.pctDelta.isInfinite() || r.pctDelta.isNaN()
+            final barLen = unbounded ? RP_HALF : Math.max(1, (int)(Math.abs(r.pctDelta) / maxAbs * RP_HALF))
             final cls = worse ? 'worse' : 'better'
             // Right-aligned task · metric label in the left gutter.
             final rawLabel = "${r.taskKey} · ${r.label}".toString()

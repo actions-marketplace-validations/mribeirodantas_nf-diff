@@ -123,13 +123,15 @@ class LineageStore {
      * {@code WorkflowRun} for that session (so the caller leaves the fields
      * unset and the report simply omits the corresponding rows).
      */
-    RunEnv environmentForSession(UUID sessionId) {
+    RunEnv environmentForSession(UUID sessionId, String runName = null) {
         if( sessionId == null )
             return null
 
         final session = sessionId.toString()
         final slurper = new JsonSlurper()
         int scanned = 0
+        // Records lacking a runName match the session only as a fallback.
+        Object fallbackMeta = null
         try {
             for( Path file : recordFiles() ) {
                 if( ++scanned > MAX_RECORDS ) {
@@ -142,8 +144,14 @@ class LineageStore {
                 final spec = specOf(record)
                 if( asText(spec.get('sessionId')) != session )
                     continue
-                return toRunEnv(spec.get('metadata'))
+                final recName = asText(spec.get('runName'))
+                if( runName == null || recName == runName )
+                    return toRunEnv(spec.get('metadata'))
+                if( recName == null && fallbackMeta == null )
+                    fallbackMeta = spec.get('metadata')
             }
+            if( fallbackMeta != null )
+                return toRunEnv(fallbackMeta)
         }
         catch( Exception e ) {
             log.warn "nf-diff: failed to read lineage WorkflowRun for session ${session} under '${storeRoot}': ${e.message}"
@@ -151,6 +159,26 @@ class LineageStore {
         }
         log.debug "nf-diff: lineage store under '${storeRoot}' has no WorkflowRun record for session ${session}"
         return null
+    }
+
+    /** LID hashes of the session's WorkflowRun records whose runName matches. */
+    private Set<String> workflowRunLids(UUID sessionId, String runName) {
+        final out = new LinkedHashSet<String>()
+        final slurper = new JsonSlurper()
+        try {
+            for( Path file : recordFiles() ) {
+                final record = parse(slurper, file)
+                if( record == null || kindOf(record) != 'WorkflowRun' )
+                    continue
+                final spec = specOf(record)
+                if( asText(spec.get('sessionId')) == sessionId.toString() && asText(spec.get('runName')) == runName )
+                    out << lidHash(file)
+            }
+        }
+        catch( Exception e ) {
+            log.debug "nf-diff: could not resolve WorkflowRun for run '${runName}': ${e.message}"
+        }
+        return out
     }
 
     /** Build a {@link RunEnv} from a {@code WorkflowRun.metadata} map, tolerating missing sub-objects. */
@@ -190,11 +218,13 @@ class LineageStore {
      * for that session (so the caller can fall back), or an edge set (possibly
      * empty — a linear single-task run legitimately has no edges) when it does.
      */
-    Set<DagEdge> edgesForSession(UUID sessionId) {
+    Set<DagEdge> edgesForSession(UUID sessionId, String runName = null) {
         if( sessionId == null )
             return null
 
         final session = sessionId.toString()
+        // LID hashes of the WorkflowRun(s) named runName; null = no scoping.
+        final runLids = runName != null ? workflowRunLids(sessionId, runName) : null
 
         // Pass 1: index every TaskRun for this session by its LID hash -> process.
         final taskHashToProcess = new LinkedHashMap<String,String>()
@@ -219,6 +249,11 @@ class LineageStore {
                 final spec = specOf(record)
                 if( asText(spec.get('sessionId')) != session )
                     continue
+                if( runLids ) {
+                    final owner = lidHashOf(asText(spec.get('workflowRun')))
+                    if( owner != null && !runLids.contains(owner) )
+                        continue
+                }
                 final hash = lidHash(file)
                 final process = processName(asText(spec.get('name')))
                 if( hash != null && process != null ) {

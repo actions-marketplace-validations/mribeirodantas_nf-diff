@@ -133,16 +133,38 @@ class RunLoaderTest extends Specification {
      * chronological order (latest last, matching Nextflow's append-only file),
      * and return a {@link RunLoader} rooted at the fixture's base dir.
      */
-    private RunLoader loaderWithHistory(List<String> runNames) {
+    private RunLoader loaderWithHistory(List<String> runNames, Map<String,String> statuses = [:]) {
         final dir = Files.createDirectories(tmp.resolve('.nextflow'))
         final rev = 'afff16a9b45c8e8a4f5a3743780ac13a541762f8'
         final lines = runNames.withIndex().collect { String name, int i ->
             // timestamp, duration, runName, status, revisionId, sessionId, command
-            [ "2026-09-08 12:0${i}:00", '1.5s', name, 'OK', rev,
+            [ "2026-09-08 12:0${i}:00", '1.5s', name, statuses.get(name, 'OK'), rev,
               UUID.randomUUID().toString(), 'nextflow run hello' ].join('\t')
         }
         Files.write(dir.resolve('history'), (lines.join('\n') + '\n').bytes)
         return new RunLoader(tmp)
+    }
+
+    def 'load asks for the run name when a session id matches several resumed runs'() {
+        given: 'two history rows (original + -resume) sharing one session id'
+        def dir = Files.createDirectories(tmp.resolve('.nextflow'))
+        def sid = UUID.randomUUID().toString()
+        def rev = 'afff16a9b45c8e8a4f5a3743780ac13a541762f8'
+        def lines = ['run_a', 'run_b'].withIndex().collect { String name, int i ->
+            ["2026-09-08 12:0${i}:00", '1.5s', name, 'OK', rev, sid, 'nextflow run hello'].join('\t')
+        }
+        Files.write(dir.resolve('history'), (lines.join('\n') + '\n').bytes)
+        def loader = new RunLoader(tmp).withArchiveDir(tmp.resolve('no-archive'))
+
+        when:
+        loader.load(sid)
+
+        then:
+        def e = thrown(RunLoader.AmbiguousRunException)
+        e.message.contains("Session ${sid} has 2 runs")
+        e.message.contains('run_a, run_b')
+        e.message.contains('pass the run name')
+        !e.message.contains('longer session id')
     }
 
     def 'lastPair with the default B offset compares run A-back against the latest'() {
@@ -198,6 +220,30 @@ class RunLoaderTest extends Specification {
 
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def 'lastPair skips unfinished (in-progress or killed) runs (#21)'() {
+        given: 'r4 is still running and r2 was killed (status "-"); r3 failed (ERR)'
+        def loader = loaderWithHistory(['r0', 'r1', 'r2', 'r3', 'r4'], [r2: '-', r3: 'ERR', r4: '-'])
+
+        expect: 'bare --last compares the two most recent FINISHED runs (ERR counts as finished)'
+        loader.lastPair(1) == ['r1', 'r3']
+
+        and: 'offsets count finished runs only'
+        loader.lastPair(2) == ['r0', 'r3']
+    }
+
+    def 'lastPair counts only finished runs when checking there are enough (#21)'() {
+        given: 'three rows but only one finished run'
+        def loader = loaderWithHistory(['r0', 'r1', 'r2'], [r1: '-', r2: '-'])
+
+        when:
+        loader.lastPair(1)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('finished runs')
+        e.message.contains('2 unfinished run(s) skipped')
     }
 
     // ---- archive fallback --------------------------------------------------

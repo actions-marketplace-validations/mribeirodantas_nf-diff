@@ -261,6 +261,8 @@ class DiffResult {
         String taskKey
         String process
         String tag
+        /** Attempt number, or null when not recorded. */
+        Long attempt
         /** Task status, e.g. {@code FAILED}, {@code ABORTED}. */
         String status
         /** Exit code as recorded, already normalised via {@link DiffResult#normalizeExit}. */
@@ -383,11 +385,21 @@ class DiffResult {
         private String sameProjectWarning() {
             final parts = new ArrayList<String>()
             if( driftedA || driftedB ) {
-                final which = (driftedA && driftedB) ? 'both runs were'
-                        : (driftedA ? 'run A was' : 'run B was')
+                // When both runs drifted to the SAME commit, say so plainly rather
+                // than implying the two runs differ from each other ("A: x, B: x").
+                // Ids may be abbreviated on one side, so a shared prefix counts.
+                final ra = revisionA?.trim() ?: ''
+                final rb = revisionB?.trim() ?: ''
+                final sameRev = driftedA && driftedB && ra && rb && (ra.startsWith(rb) || rb.startsWith(ra))
+                final which = sameRev
+                        ? "both runs were launched at the same, different git revision (${shortSha(revisionA)})".toString()
+                        : (driftedA && driftedB)
+                        ? "both runs were launched at a different git revision (A: ${shortSha(revisionA)}, B: ${shortSha(revisionB)})".toString()
+                        : driftedA
+                        ? "run A was launched at a different git revision (${shortSha(revisionA)})".toString()
+                        : "run B was launched at a different git revision (${shortSha(revisionB)})".toString()
                 parts << ("The resolved configuration was rebuilt from the working tree at " +
-                        "${shortSha(currentRevision)}, but ${which} launched at a different git revision " +
-                        "(A: ${shortSha(revisionA)}, B: ${shortSha(revisionB)}). Any config difference driven " +
+                        "${shortSha(currentRevision)}, but ${which}. Any config difference driven " +
                         "by code changes between those revisions is NOT visible here — both sides were resolved " +
                         "against the current checkout.").toString()
             }
@@ -722,6 +734,9 @@ class DiffResult {
             e.cpuEffA() != null || e.cpuEffB() != null || e.memEffA() != null || e.memEffB() != null
         }
     }
+
+    /** Task-matching caveats (retried attempts, positional matching) the reader should know about. */
+    List<String> warnings = []
 
     /** Failed tasks in run A / run B (status FAILED/ABORTED or a non-zero exit). */
     List<TaskFailure> failuresA = []

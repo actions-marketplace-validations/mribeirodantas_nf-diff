@@ -50,9 +50,55 @@ class DiffPluginTest extends Specification {
         plugin().dispatch('diff', []) == 2
     }
 
-    def 'help request is a usage exit (2)'() {
-        expect:
-        plugin().dispatch('diff', ['-h']) == 2
+    def 'help request (#flag) prints usage to stdout and exits 0 (#22)'() {
+        given:
+        def out = new ByteArrayOutputStream()
+        def err = new ByteArrayOutputStream()
+        def origOut = System.out
+        def origErr = System.err
+        System.out = new PrintStream(out, true, 'UTF-8')
+        System.err = new PrintStream(err, true, 'UTF-8')
+
+        when:
+        def code
+        try {
+            code = plugin().dispatch('diff', args)
+        }
+        finally {
+            System.out = origOut
+            System.err = origErr
+        }
+
+        then:
+        code == 0
+        out.toString('UTF-8').contains('Usage: nextflow plugin nf-diff:diff')
+        err.toString('UTF-8').isEmpty()
+
+        where:
+        flag                 | args
+        '-h'                 | ['-h']
+        '--help'             | ['--help']
+        '--help with others' | ['--last', '--help']
+    }
+
+    def 'no arguments at all is still a usage error (2) on stderr'() {
+        given:
+        def err = new ByteArrayOutputStream()
+        def origErr = System.err
+        System.err = new PrintStream(err, true, 'UTF-8')
+
+        when:
+        def code
+        try {
+            code = plugin().dispatch('diff', [])
+        }
+        finally {
+            System.err = origErr
+        }
+
+        then:
+        code == 2
+        err.toString('UTF-8').contains('no arguments given')
     }
 
     def 'getCommands advertises only the diff verb'() {

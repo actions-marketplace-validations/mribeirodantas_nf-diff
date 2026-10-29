@@ -4,10 +4,12 @@ name: nf-diff (dogfood)
 # Nextflow runs from a trivial demo pipeline, then compare them with the local
 # action (`uses: ./`).
 #
-# NOTE: the action resolves nf-diff from registry.nextflow.io, so this job
-# validates the *action wiring* against the published plugin — not the
-# working-tree build. The unit suite (`make check`) and `make smoke` cover the
-# current source; keep this as an integration check for action.yml itself.
+# The plugin is built from THIS checkout (`make dev-repo`) and exposed to every
+# later step through NXF_PLUGINS_TEST_REPOSITORY, so the action's bare-id
+# `nextflow plugin nf-diff:diff` call resolves the branch build rather than the
+# release on registry.nextflow.io. A verification step then fails the job
+# unless the loaded plugin is byte-identical to the build output, so the PR
+# comment always reflects the code under review (#38).
 
 on:
   pull_request:
@@ -36,8 +38,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Install Nextflow
         uses: nf-core/setup-nextflow@v2
+
+      - name: Build the plugin from this checkout
+        run: |
+          set -euo pipefail
+          # Assemble the plugin and write a local plugin repo (plugins.json +
+          # zip) advertising this build's version, exactly as `make smoke` does.
+          make dev-repo
+          version="$(awk -F"'" '/^version[[:space:]]*=/{print $2}' build.gradle)"
+          echo "NF_DIFF_VERSION=${version}" >> "$GITHUB_ENV"
+          # Every later step (including the composite action) resolves the bare
+          # `nf-diff` id from this repo instead of the public registry.
+          echo "NXF_PLUGINS_TEST_REPOSITORY=file://${GITHUB_WORKSPACE}/build/plugin-repo/plugins.json" >> "$GITHUB_ENV"
+          # Nextflow reuses an already-extracted plugin of the same version, so
+          # drop any copy (e.g. from a cached home) to force the local build.
+          rm -rf "${NXF_HOME:-$HOME/.nextflow}/plugins/nf-diff-"*
+          echo "Built nf-diff ${version} from $(git rev-parse --short HEAD)"
 
       - name: Produce two demo runs
         run: |
@@ -57,9 +78,6 @@ jobs:
               script:
               """
               echo "${message}" > out.txt
-              # TEMP: deliberately fail to exercise the failure log-artifact steps
-              echo "Simulating a task failure for CI testing" >&2
-              exit 1
               """
           }
 
@@ -72,8 +90,8 @@ jobs:
 
           # Two runs that differ only in a pipeline param, so nf-diff has a
           # meaningful change to report.
-            nextflow run main.nf -c lineage.config --message hello
-            nextflow run main.nf -c lineage.config --message world
+          nextflow run main.nf -c lineage.config --message hello
+          nextflow run main.nf -c lineage.config --message world
 
       - name: Run nf-diff on the two demo runs
         uses: ./
@@ -87,6 +105,39 @@ jobs:
           setup-nextflow: 'false'
           # The two runs intentionally differ; don't fail the dogfood job on it.
           fail-on-change: 'false'
+
+      - name: Verify the branch build was used
+        run: |
+          set -euo pipefail
+          plugin_dir="${NXF_HOME:-$HOME/.nextflow}/plugins/nf-diff-${NF_DIFF_VERSION}"
+          jar="build/libs/nf-diff-${NF_DIFF_VERSION}.jar"
+          echo "Loaded plugin: ${plugin_dir}"
+          if [[ ! -d "$plugin_dir" ]]; then
+            echo "::error::nf-diff ${NF_DIFF_VERSION} was not extracted to ${plugin_dir}"
+            exit 1
+          fi
+          manifest="$(find "$plugin_dir" -path '*META-INF/MANIFEST.MF' | head -n 1)"
+          grep -E '^Plugin-(Id|Version):' "$manifest"
+          # Fingerprint the plugin's own classes on both sides; any difference
+          # means Nextflow loaded something other than this checkout's build.
+          fingerprint() { (cd "$1" && find io -type f -name '*.class' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
+          loaded_root="$(dirname "$(dirname "$manifest")")"
+          built_root="$(mktemp -d)"
+          unzip -q "$jar" -d "$built_root"
+          loaded="$(fingerprint "$loaded_root")"
+          built="$(fingerprint "$built_root")"
+          echo "classes fingerprint  loaded: ${loaded}"
+          echo "classes fingerprint  built:  ${built}"
+          if [[ "$loaded" != "$built" ]]; then
+            echo "::error::The dogfood run loaded an nf-diff plugin that differs from this checkout's build (published registry copy?)."
+            exit 1
+          fi
+          {
+            echo "### nf-diff dogfood: plugin under test"
+            echo "- version: \`${NF_DIFF_VERSION}\` built from \`$(git rev-parse --short HEAD)\`"
+            echo "- loaded from: \`${plugin_dir}\`"
+            echo "- classes fingerprint: \`${loaded}\` (matches \`${jar}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # 2b. On failure, collect logs and upload as a downloadable artifact
       - name: Collect logs on failure

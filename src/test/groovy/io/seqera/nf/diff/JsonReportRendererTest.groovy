@@ -150,6 +150,47 @@ class JsonReportRendererTest extends Specification {
         !r.sameHash
     }
 
+    def 'growth from a zero baseline renders valid JSON with an unbounded regression (#7)'() {
+        given: 'peak RSS goes 0 -> 1 KB (pctDelta = +Infinity) and realtime 1s -> 0 (finite -100%)'
+        def a = [task(process: 'FOO', name: 'FOO (1)', hash: 'aa',
+                display: [peak_rss: '0', realtime: '1s'], raw: [peak_rss: 0L, realtime: 1_000L])]
+        def b = [task(process: 'FOO', name: 'FOO (1)', hash: 'aa',
+                display: [peak_rss: '1 KB', realtime: '0ms'], raw: [peak_rss: 1024L, realtime: 0L])]
+
+        when: 'rendering must not throw (JsonOutput rejects non-finite numbers)'
+        def obj = json(a, b)
+
+        then: 'the infinite delta is emitted as null and flagged unbounded, keeping its direction'
+        def rss = obj.regressions.find { it.metric == 'peak_rss' }
+        rss.pctDelta == null
+        rss.unbounded == true
+        rss.regression == true
+        rss.valueA == 0
+        rss.valueB == 1024
+
+        and: 'finite deltas are unchanged and not flagged unbounded'
+        def rt = obj.regressions.find { it.metric == 'realtime' }
+        rt.pctDelta == -100.0d
+        rt.unbounded == false
+        rt.regression == false
+    }
+
+    def 'shrinking to zero from a zero baseline in the other direction is also JSON-safe (#7)'() {
+        given: 'a negative raw value is not realistic, so drive -Infinity directly'
+        def diff = new RunComparator(new CompareOptions()).compare(
+                snap('runA', [task(process: 'FOO', name: 'FOO (1)', raw: [peak_rss: 0L])]),
+                snap('runB', [task(process: 'FOO', name: 'FOO (1)', raw: [peak_rss: 1L])]))
+        diff.regressions[0].pctDelta = Double.NEGATIVE_INFINITY
+
+        when:
+        def obj = new JsonSlurper().parseText(new JsonReportRenderer().render(diff))
+
+        then:
+        obj.regressions[0].pctDelta == null
+        obj.regressions[0].unbounded == true
+        obj.regressions[0].regression == false
+    }
+
     def 'obvious-only differences are not surfaced by default but are in verbose'() {
         given:
         def a = [task(process: 'FOO', name: 'FOO (1)', display: [status: 'COMPLETED', realtime: '10s', workdir: '/w/a'])]

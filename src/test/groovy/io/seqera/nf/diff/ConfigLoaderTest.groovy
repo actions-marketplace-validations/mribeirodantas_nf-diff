@@ -106,6 +106,45 @@ class ConfigLoaderTest extends Specification {
         withC['process.cpus'] == '16'
     }
 
+    def 'passes CLI params to config expressions'() {
+        given:
+        writeConfig('process.cpus = params.max_cpus\n')
+
+        when:
+        def two = loader.resolve('nextflow run main.nf --max_cpus 2', projectDir)
+        def one = loader.resolve('nextflow run main.nf --max_cpus 1', projectDir)
+
+        then:
+        two['process.cpus'] == '2'
+        one['process.cpus'] == '1'
+    }
+
+    def 'honours -C by replacing the default config'() {
+        given:
+        writeConfig('process.cpus = 1\ndocker.enabled = true\n')
+        Files.write(projectDir.resolve('only.config'), "process.cpus = 32\n".getBytes('UTF-8'))
+
+        when:
+        def cfg = loader.resolve('nextflow run main.nf -C only.config', projectDir)
+
+        then:
+        cfg['process.cpus'] == '32'
+        !cfg.containsKey('docker.enabled')
+    }
+
+    def 'finds the per-commit asset clone by full or abbreviated revision'() {
+        given:
+        def clone = projectDir.resolve('.repos/nf-core/demo/clones/671a0726cb489b22')
+        Files.createDirectories(clone)
+
+        expect:
+        ConfigLoader.cloneFor(projectDir, 'nf-core/demo', '671a0726cb') == clone
+        ConfigLoader.cloneFor(projectDir, 'nf-core/demo', '671a0726cb489b22') == clone
+        ConfigLoader.cloneFor(projectDir, 'nf-core/demo', 'deadbeef') == null
+        ConfigLoader.cloneFor(projectDir, 'nf-core/demo', null) == null
+        ConfigLoader.cloneFor(projectDir, 'nf-core/other', '671a0726cb') == null
+    }
+
     def 'does not mistake a following option for the -c config path'() {
         given: 'a real extra config that only takes effect if -c parses correctly'
         writeConfig('process.cpus = 1\n')

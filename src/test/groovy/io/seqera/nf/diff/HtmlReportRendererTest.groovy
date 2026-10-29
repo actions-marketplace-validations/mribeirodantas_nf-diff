@@ -85,6 +85,38 @@ class HtmlReportRendererTest extends Specification {
         html.contains('class="rp-legend"')
     }
 
+    def 'regressions plot scales by finite deltas when one delta is unbounded (#8)'() {
+        given: 'FOO peak RSS grows from 0 (+Infinity) and BAR runs 4x slower (+300%)'
+        def html = render(
+                [task(process: 'FOO', name: 'FOO (1)', hash: 'h1', raw: [peak_rss: 0L]),
+                 task(process: 'BAR', name: 'BAR (1)', hash: 'h2', raw: [realtime: 100L])],
+                [task(process: 'FOO', name: 'FOO (1)', hash: 'h1', raw: [peak_rss: 1024L]),
+                 task(process: 'BAR', name: 'BAR (1)', hash: 'h2', raw: [realtime: 400L])] )
+        def widths = (html =~ /class="rp-bar[^"]*" x="[^"]*" y="[^"]*" width="(\d+)"/).collect { it[1] as int }
+
+        expect: 'both bars are drawn at full length rather than collapsing to 1px'
+        widths.size() == 2
+        widths.every { it == 220 }
+
+        and: 'the unbounded delta is still labelled'
+        html.contains('+∞%')
+    }
+
+    def 'finite bars stay proportional alongside an unbounded delta (#8)'() {
+        given: '+Infinity, +300% and +100% deltas'
+        def html = render(
+                [task(process: 'FOO', name: 'FOO (1)', hash: 'h1', raw: [peak_rss: 0L]),
+                 task(process: 'BAR', name: 'BAR (1)', hash: 'h2', raw: [realtime: 100L]),
+                 task(process: 'BAZ', name: 'BAZ (1)', hash: 'h3', raw: [realtime: 100L])],
+                [task(process: 'FOO', name: 'FOO (1)', hash: 'h1', raw: [peak_rss: 1024L]),
+                 task(process: 'BAR', name: 'BAR (1)', hash: 'h2', raw: [realtime: 400L]),
+                 task(process: 'BAZ', name: 'BAZ (1)', hash: 'h3', raw: [realtime: 200L])] )
+        def widths = (html =~ /class="rp-bar[^"]*" x="[^"]*" y="[^"]*" width="(\d+)"/).collect { it[1] as int }
+
+        expect: 'rows are worst-first: infinite (full), +300% (full finite scale), +100% (a third)'
+        widths == [220, 220, 73]
+    }
+
     def 'regressions plot is absent when no metric crosses the threshold'() {
         given:
         def html = render(
