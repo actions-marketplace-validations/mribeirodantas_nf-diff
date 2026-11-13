@@ -51,6 +51,7 @@ class MarkdownReportRenderer {
         renderEfficiency(sb, diff)
         renderTasks(sb, diff)
         renderOutputs(sb, diff)
+        renderInputs(sb, diff)
         renderPublished(sb, diff)
         renderLogs(sb, diff)
         renderDag(sb, diff)
@@ -189,9 +190,18 @@ class MarkdownReportRenderer {
         sb << '| Process | Run A | Run B | Status |\n'
         sb << '|---|---:|---:|---|\n'
         diff.processes.each { ProcessDiff pd ->
-            sb << "| ${cell(pd.process)} | ${pd.countA} | ${pd.countB} | ${processStatus(pd)} |\n"
+            final name = pd.renamed ? "${pd.process} (was ${pd.renamedFrom})".toString() : pd.process
+            sb << "| ${cell(name)} | ${pd.countA} | ${pd.countB} | ${processStatus(pd)} |\n"
         }
         sb << '\n'
+        final renamed = diff.processes.findAll { ProcessDiff pd -> pd.renamed }
+        if( renamed ) {
+            sb << 'Renamed processes are inferred from what each process ran, not from its name alone:\n\n'
+            renamed.each { ProcessDiff pd ->
+                sb << "- `${pd.renamedFrom}` → `${pd.process}`: ${pd.renameEvidence.join('; ')}\n"
+            }
+            sb << '\n'
+        }
     }
 
     private void renderSoftware(StringBuilder sb, DiffResult diff) {
@@ -261,15 +271,24 @@ class MarkdownReportRenderer {
     }
 
     private void renderOutputs(StringBuilder sb, DiffResult diff) {
-        if( !diff.diffOutputs )
-            return
-        sb << '## Output files\n\n'
-        if( diff.outputsNote )
-            sb << "> ${cell(diff.outputsNote)}\n\n"
+        if( diff.diffOutputs )
+            renderTaskFiles(sb, 'Output files', 'output', diff.outputsNote, diff.outputs)
+    }
 
-        final changed = diff.outputs.findAll { DiffResult.OutputDiff od -> od.hasChanges() }
+    private void renderInputs(StringBuilder sb, DiffResult diff) {
+        if( diff.diffInputs )
+            renderTaskFiles(sb, 'Input files', 'input', diff.inputsNote, diff.inputs)
+    }
+
+    /** One section of per-task file comparisons (outputs or staged inputs). */
+    private void renderTaskFiles(StringBuilder sb, String title, String noun, String note, List<DiffResult.OutputDiff> diffs) {
+        sb << "## ${title}\n\n"
+        if( note )
+            sb << "> ${cell(note)}\n\n"
+
+        final changed = diffs.findAll { DiffResult.OutputDiff od -> od.hasChanges() }
         if( changed.isEmpty() ) {
-            sb << '_No output-file differences detected._\n\n'
+            sb << "_No ${noun}-file differences detected._\n\n"
             return
         }
         changed.each { DiffResult.OutputDiff od ->
@@ -277,7 +296,7 @@ class MarkdownReportRenderer {
             sb << '| File | Run A | Run B | Status |\n'
             sb << '|---|---|---|---|\n'
             od.files.findAll { it.kind != DiffResult.Kind.UNCHANGED }.each { DiffResult.OutputFileDiff f ->
-                sb << "| ${cell(f.path)} | ${cell(sizeCell(f.sizeA))} | ${cell(sizeCell(f.sizeB))} | ${f.kind.name().toLowerCase()} |\n"
+                sb << "| ${cell(f.path)} | ${cell(sizeCell(f.sizeA))} | ${cell(sizeCell(f.sizeB))} | ${f.kind.name().toLowerCase()}${f.decompressed ? ' (gunzipped)' : ''} |\n"
             }
             sb << '\n'
             // Line-level diff of each changed text file, below the size summary.
@@ -317,7 +336,7 @@ class MarkdownReportRenderer {
         sb << '| File | Run A | Run B | Status |\n'
         sb << '|---|---|---|---|\n'
         changed.each { DiffResult.OutputFileDiff f ->
-            sb << "| ${cell(f.path)} | ${cell(sizeCell(f.sizeA))} | ${cell(sizeCell(f.sizeB))} | ${f.kind.name().toLowerCase()} |\n"
+            sb << "| ${cell(f.path)} | ${cell(sizeCell(f.sizeA))} | ${cell(sizeCell(f.sizeB))} | ${f.kind.name().toLowerCase()}${f.decompressed ? ' (gunzipped)' : ''} |\n"
         }
         sb << '\n'
         // Line-level diff of each changed text file, below the size summary.
@@ -437,6 +456,7 @@ class MarkdownReportRenderer {
     private static String processStatus(ProcessDiff pd) {
         if( pd.added )   return 'added'
         if( pd.removed ) return 'removed'
+        if( pd.renamed ) return 'renamed'
         if( pd.changed ) return 'changed'
         return 'unchanged'
     }

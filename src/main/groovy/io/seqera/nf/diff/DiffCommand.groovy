@@ -115,6 +115,12 @@ class DiffCommand {
      */
     int outputsMaxLines = OutputComparator.DEFAULT_MAX_LINES
 
+    /** File patterns left out of the outputs and published comparisons ({@code --outputs-ignore}). */
+    List<String> outputsIgnore = []
+
+    /** Tolerance for numbers in text files ({@code --numeric-tolerance}); 0 compares exactly. */
+    double numericTolerance = 0.0d
+
     /** When true, compare the standard log files each matched task wrote. */
     boolean diffLogs = false
 
@@ -125,6 +131,19 @@ class DiffCommand {
      * locally.
      */
     boolean diffDag = false
+
+    /**
+     * When true, compare the input files staged into each matched task's work
+     * directory. Like {@link #diffOutputs}, needs the work directories locally.
+     */
+    boolean diffInputs = false
+
+    /**
+     * When true (the default), pair a process found only in run A with one found
+     * only in run B as a rename when they did the same work. {@code
+     * --detect-renames=false} reports them as removed and added instead.
+     */
+    boolean detectRenames = true
 
     /**
      * Maximum tail lines kept per log file when {@link #diffLogs} is set.
@@ -205,9 +224,13 @@ class DiffCommand {
         opts.diffOutputs = diffOutputs
         opts.outputsMaxBytes = outputsMaxBytes
         opts.outputsMaxLines = outputsMaxLines
+        opts.outputsIgnore = outputsIgnore
+        opts.numericTolerance = numericTolerance
         opts.diffLogs = diffLogs
         opts.logsMaxLines = logsMaxLines
         opts.diffDag = diffDag
+        opts.diffInputs = diffInputs
+        opts.detectRenames = detectRenames
         opts.diffPublished = diffPublished()
         opts.publishedDirA = publishedDirA
         opts.publishedDirB = publishedDirB
@@ -361,14 +384,26 @@ ${reportLine}"""
                 case '--outputs-max-lines':
                     outputsMaxLines = cur.intValue(1, 'an integer')
                     break
+                case '--outputs-ignore':
+                    outputsIgnore.addAll(splitGlobs(cur.requireValue()))
+                    break
+                case '--numeric-tolerance':
+                    numericTolerance = cur.doubleValue(0.0d, 'a number (e.g. 1e-6)')
+                    break
                 case '--diff-logs':
                     diffLogs = cur.boolValue()
                     break
                 case '--diff-dag':
                     diffDag = cur.boolValue()
                     break
+                case '--diff-inputs':
+                    diffInputs = cur.boolValue()
+                    break
+                case '--detect-renames':
+                    detectRenames = cur.boolValue()
+                    break
                 case '--diff-all':
-                    // Convenience: the three opt-in work-dir layers share the
+                    // Convenience: the opt-in work-dir layers share the
                     // same precondition (work dirs must still exist) and are
                     // commonly wanted together. Only enables — never force
                     // false — so a later explicit --diff-<layer>=false can still
@@ -377,6 +412,7 @@ ${reportLine}"""
                         diffOutputs = true
                         diffLogs = true
                         diffDag = true
+                        diffInputs = true
                     }
                     break
                 case '--logs-max-lines':
@@ -688,6 +724,22 @@ Options:
                        When --diff-outputs is set, keep only the first <n> lines
                        of each changed text file before line-diffing it
                        (default: 1000).
+  --outputs-ignore=<globs>
+                       Comma-separated file patterns left out of --diff-outputs
+                       and --published-a/-b, for files expected to differ
+                       between runs (e.g. '*.html,versions.yml,pipeline_info/').
+                       A pattern without '/' matches a file or folder name
+                       anywhere; one with '/' matches the relative path, where
+                       '**' spans folders. Skipped files never count toward
+                       --fail-on-change; the report says how many were skipped.
+                       Repeatable.
+  --numeric-tolerance=<x>
+                       Treat numbers in changed text files (outputs, published
+                       results, inputs) as equal when |a-b| <= x*max(1,|a|,|b|),
+                       e.g. 1e-6 for floating-point noise. A file whose lines
+                       differ only that way counts as unchanged, and line diffs
+                       skip such lines. Numbers inside identifiers (chr1,
+                       sample_01) must still match exactly. Default 0 (exact).
   --published-a=<dir>  Compare the two runs' published output directories
   --published-b=<dir>  (their outdir / publishDir trees) instead of — or in
                        addition to — the per-task work-dir outputs. Give both:
@@ -716,10 +768,23 @@ Options:
                        tasks' work directories to still exist locally. Best
                        effort and informational only: incomplete when work dirs
                        were cleaned up, so it never affects --fail-on-change.
-  --diff-all           Enable all three work-dir layers at once
-                       (--diff-outputs, --diff-logs, --diff-dag); they share the
+  --diff-inputs        Compare the input files staged into each matched task's
+                       work directory (Nextflow's input symlinks, followed to
+                       the files they point at): unchanged when both runs used
+                       the same file, otherwise by size, SHA-256 and a line
+                       diff. Shows whether a changed result came from changed
+                       inputs. Needs the work directories locally; a changed
+                       input counts as a difference for --fail-on-change.
+  --diff-all           Enable all four work-dir layers at once (--diff-outputs,
+                       --diff-inputs, --diff-logs, --diff-dag); they share the
                        same precondition (work dirs must still exist). Enables
                        only, so a later --diff-<layer>=false still opts one out.
+  --detect-renames=<bool>
+                       Pair a process found only in run A with one found only
+                       in run B as a rename (e.g. EXAMPLEFOO -> EXAMPLE_FOO)
+                       when they did the same work: matching task scripts plus
+                       tags, task count, software or a similar name. On by
+                       default; set false to report them as removed and added.
   --dir=<dir>          Project directory containing .nextflow/ (default: .).
                        Used for both runs unless overridden per-run below.
   --dir-a=<dir>        Project directory for run A only (its .nextflow/ history,

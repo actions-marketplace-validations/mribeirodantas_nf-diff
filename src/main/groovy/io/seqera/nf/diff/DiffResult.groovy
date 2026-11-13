@@ -66,11 +66,20 @@ class DiffResult {
         String process
         int countA
         int countB
+        /**
+         * Run A's name for this process when it was detected as renamed
+         * ({@link ProcessRenameDetector}); {@code process} is run B's name.
+         */
+        String renamedFrom
+        /** Why the rename was inferred, strongest reason first. */
+        List<String> renameEvidence = []
 
         boolean isAdded()    { countA == 0 && countB > 0 }
         boolean isRemoved()  { countA > 0 && countB == 0 }
+        boolean isRenamed()  { renamedFrom != null }
         boolean isChanged()  { countA != countB && countA > 0 && countB > 0 }
-        boolean isUnchanged(){ countA == countB }
+        /** A rename is a pipeline change, so a renamed process is never unchanged. */
+        boolean isUnchanged(){ countA == countB && !isRenamed() }
     }
 
     /**
@@ -472,6 +481,10 @@ class DiffResult {
         boolean verified = true
         /** Optional human note (e.g. why a file was left unverified). */
         String note
+        /** True when both sides were gzip and were compared by decompressed content. */
+        boolean decompressed
+        /** True when the file differs only in numbers within {@code --numeric-tolerance}. */
+        boolean withinTolerance
         /**
          * Line-level diff ops for a {@link Kind#CHANGED} file that was
          * recognised as text on both sides. Empty for binary files, for
@@ -514,6 +527,8 @@ class DiffResult {
         /** Human note when outputs could not be compared (missing work dir, etc.). */
         String note
         List<OutputFileDiff> files = []
+        /** Output paths skipped because they match {@code --outputs-ignore}. */
+        List<String> ignoredFiles = []
 
         List<OutputFileDiff> changedFiles() { files.findAll { it.kind == Kind.CHANGED } }
         List<OutputFileDiff> addedFiles()   { files.findAll { it.kind == Kind.ADDED } }
@@ -558,6 +573,8 @@ class DiffResult {
         /** Human note when the trees could not be compared (missing directory, etc.). */
         String note
         List<OutputFileDiff> files = []
+        /** Published paths skipped because they match {@code --outputs-ignore}. */
+        List<String> ignoredFiles = []
 
         List<OutputFileDiff> changedFiles() { files.findAll { it.kind == Kind.CHANGED } }
         List<OutputFileDiff> addedFiles()   { files.findAll { it.kind == Kind.ADDED } }
@@ -690,6 +707,9 @@ class DiffResult {
     List<ProcessDiff> processes = []
     List<TaskDiff> tasks = []
 
+    /** Number of processes detected as renamed between the runs. */
+    int processesRenamed() { processes.count { ProcessDiff p -> p.isRenamed() } as int }
+
     /**
      * Per-process software environment (container image + conda spec) diff.
      * Read from the run cache, so this is always populated (no work directories
@@ -809,6 +829,30 @@ class DiffResult {
      * it is empty/limited (e.g. missing work directories). Surfaced by renderers.
      */
     String outputsNote
+
+    /**
+     * Whether the input-diff layer was computed. When false, {@link #inputs}
+     * is empty and input content never affects {@link #isIdentical()}.
+     */
+    boolean diffInputs = false
+
+    /**
+     * Per-task comparison of the input files staged into each matched task's
+     * work directory ({@link InputComparator}). Populated only when
+     * {@link #diffInputs} is set; a changed input then breaks {@link #isIdentical()}.
+     */
+    List<OutputDiff> inputs = []
+
+    /** Human-readable note about the inputs layer, surfaced by renderers. */
+    String inputsNote
+
+    /** True when any compared task had a changed/added/removed staged input. */
+    boolean hasInputChanges() {
+        return diffInputs && inputs.any { it.hasChanges() }
+    }
+
+    /** Number of compared tasks whose staged inputs changed. */
+    int inputsChangedCount() { inputs.count { OutputDiff od -> od.hasChanges() } as int }
 
     /** True when any compared task produced a changed/added/removed output file. */
     boolean hasOutputChanges() {
@@ -956,6 +1000,7 @@ class DiffResult {
                 processes.every { it.unchanged } &&
                 !hasSoftwareChanges() &&
                 !hasOutputChanges() &&
+                !hasInputChanges() &&
                 !hasPublishedChanges() &&
                 (!showObvious || regressionCount() == 0)
     }

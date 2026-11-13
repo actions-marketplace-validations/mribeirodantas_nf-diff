@@ -59,6 +59,7 @@ class JsonReportRenderer {
                         regressions    : diff.regressionCount(),
                         softwareChanged : diff.softwareChangedCount(),
                         outputsChanged : diff.outputsChangedCount(),
+                        inputsChanged  : diff.inputsChangedCount(),
                         publishedChanged: diff.publishedChangedCount(),
                         logsChanged    : diff.logsChangedCount(),
                         overProvisionedA: diff.overProvisionedA(),
@@ -71,6 +72,7 @@ class JsonReportRenderer {
                         resolvedFailures: diff.resolvedFailureCount(),
                         dagEdgesAdded   : diff.dagEdgesAdded(),
                         dagEdgesRemoved : diff.dagEdgesRemoved(),
+                processesRenamed: diff.processesRenamed(),
                 ],
                 metadata   : diff.metadata.collect { fieldModel(it, diff.showObvious) },
                 params     : diff.params.collect { fieldModel(it, diff.showObvious) },
@@ -93,6 +95,9 @@ class JsonReportRenderer {
                 diffOutputs: diff.diffOutputs,
                 outputsNote: diff.outputsNote,
                 outputs    : diff.outputs.collect { outputModel(it) },
+                diffInputs : diff.diffInputs,
+                inputsNote : diff.inputsNote,
+                inputs     : diff.inputs.collect { outputModel(it) },
                 diffPublished: diff.diffPublished,
                 publishedNote: diff.publishedNote,
                 published  : diff.published != null ? publishedModel(diff.published) : null,
@@ -161,6 +166,7 @@ class JsonReportRenderer {
                 hasChanges : od.hasChanges(),
                 note       : od.note,
                 files      : od.files.collect { outputFileModel(it) },
+                ignoredFiles: od.ignoredFiles,
         ] as Map<String,Object>
     }
 
@@ -175,6 +181,7 @@ class JsonReportRenderer {
                 changedCount: pd.changedCount(),
                 note        : pd.note,
                 files       : pd.files.collect { outputFileModel(it) },
+                ignoredFiles: pd.ignoredFiles,
         ] as Map<String,Object>
     }
 
@@ -189,6 +196,8 @@ class JsonReportRenderer {
         if( f.hashA != null ) model.hashA = f.hashA
         if( f.hashB != null ) model.hashB = f.hashB
         if( f.note != null )  model.note = f.note
+        if( f.decompressed )  model.decompressed = true
+        if( f.withinTolerance ) model.withinTolerance = true
         if( f.hasLineDiff() ) {
             model.linesAdded   = f.linesAdded()
             model.linesRemoved = f.linesRemoved()
@@ -261,6 +270,8 @@ class JsonReportRenderer {
                 countA : pd.countA,
                 countB : pd.countB,
                 status : processStatus(pd),
+                renamedFrom   : pd.renamedFrom,
+                renameEvidence: pd.renameEvidence,
         ] as Map<String,Object>
     }
 
@@ -332,6 +343,7 @@ class JsonReportRenderer {
     private static String processStatus(ProcessDiff pd) {
         if( pd.added )   return 'added'
         if( pd.removed ) return 'removed'
+        if( pd.renamed ) return 'renamed'
         if( pd.changed ) return 'changed'
         return 'unchanged'
     }

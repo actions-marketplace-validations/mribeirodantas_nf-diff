@@ -71,6 +71,7 @@ class HtmlReportRenderer {
         renderEfficiency(sb, diff)
         renderTasks(sb, diff)
         renderOutputs(sb, diff)
+        renderInputs(sb, diff)
         renderPublished(sb, diff)
         renderLogs(sb, diff)
         renderDag(sb, diff)
@@ -116,8 +117,8 @@ class HtmlReportRenderer {
     private String runChip(RunSnapshot run, String side) {
         final status = (run.status ?: 'UNKNOWN').toUpperCase()
         final statusClass = isSucceeded(status) ? 'ok' : (isFailed(status) ? 'err' : 'unknown')
-        // Nextflow version is only known when the run has a .lineage/ store;
-        // omit the row rather than show a placeholder when it wasn't recorded.
+        // Nextflow version comes from the .lineage/ store or the .nextflow.log*
+        // fallback; omit the row rather than show a placeholder when unknown.
         final details = new StringBuilder()
         if( run.pipeline ) {
             // Name on the first line; when the lineage store recorded the main
@@ -169,6 +170,8 @@ ${details}        </dl>
         navLink(sb, '#tasks', 'Tasks', (diff.tasksChanged + diff.tasksAdded + diff.tasksRemoved) > 0, false)
         if( diff.diffOutputs )
             navLink(sb, '#outputs', 'Outputs', diff.hasOutputChanges(), false)
+        if( diff.diffInputs )
+            navLink(sb, '#inputs', 'Inputs', diff.hasInputChanges(), false)
         if( diff.diffPublished )
             navLink(sb, '#published', 'Published', diff.hasPublishedChanges(), false)
         if( diff.diffLogs )
@@ -246,6 +249,8 @@ ${details}        </dl>
             cb << statCard('Over-provisioned (B)', diff.overProvisionedB(), 'removed')
         if( diff.diffOutputs )
             cb << statCard('Outputs changed', diff.outputsChangedCount(), 'changed')
+        if( diff.diffInputs )
+            cb << statCard('Inputs changed', diff.inputsChangedCount(), 'changed')
         if( diff.diffPublished )
             cb << statCard('Published changed', diff.publishedChangedCount(), 'changed')
         if( diff.diffLogs )
@@ -385,7 +390,7 @@ ${recNote}  </div>
             sb << fieldRow(fd, diff.showObvious)
         }
         sb << '  </tbody>\n  </table>\n'
-        sb << '  <p class="mode-note">The <em>Nextflow version</em>, <em>build</em> and runtime environment (<em>container engine</em>, <em>Wave</em>, <em>Fusion</em>) rows are read from each run\'s data-lineage store (<code>lineage.enabled=true</code>, Nextflow 25.04+) and appear only when a run recorded one. Per-run <em>plugin</em> versions are not shown: Nextflow does not persist them in the lineage store, the history file, or the task cache, so they cannot be compared.</p>\n'
+        sb << '  <p class="mode-note">The <em>Nextflow version</em>, <em>build</em> and runtime environment (<em>container engine</em>, <em>Wave</em>, <em>Fusion</em>) rows are read from each run\'s data-lineage store (<code>lineage.enabled=true</code>, Nextflow 25.04+) and appear only when a run recorded one. Without a lineage store, the Nextflow version and build are recovered from the launch directory\'s <code>.nextflow.log*</code> files, which Nextflow keeps for the ten most recent runs only. Per-run <em>plugin</em> versions are not shown: Nextflow does not persist them in the lineage store, the history file, or the task cache, so they cannot be compared.</p>\n'
         sb << '</section>\n'
     }
 
@@ -521,14 +526,25 @@ ${recNote}  </div>
         sb << '  <table class="proc">\n'
         sb << '    <thead><tr><th>Process</th><th>Run A</th><th>Run B</th><th>Δ</th><th></th></tr></thead>\n  <tbody>\n'
         diff.processes.each { ProcessDiff pd ->
-            final kind = pd.added ? 'added' : (pd.removed ? 'removed' : (pd.changed ? 'changed' : 'unchanged'))
+            final kind = pd.added ? 'added' : (pd.removed ? 'removed' : (pd.renamed ? 'renamed' : (pd.changed ? 'changed' : 'unchanged')))
             final delta = pd.countB - pd.countA
             final deltaStr = (delta > 0 ? "+${delta}" : delta.toString()).toString()
-            sb << "    <tr class=\"row-${kind}\"><th class=\"mono\">${esc(pd.process)}</th>"
+            final rowKind = pd.renamed ? 'changed' : kind
+            final was = pd.renamed ? "<span class=\"rename-from\" title=\"${esc(pd.renameEvidence.join('; '))}\">was ${esc(pd.renamedFrom)}</span>" : ''
+            sb << "    <tr class=\"row-${rowKind}\"><th class=\"mono\">${esc(pd.process)}${was}</th>"
             sb << "<td>${pd.countA}</td><td>${pd.countB}</td><td>${esc(deltaStr)}</td>"
             sb << "<td><span class=\"pill ${kind}\">${kind}</span></td></tr>\n"
         }
         sb << '  </tbody>\n  </table>\n'
+        final renamed = diff.processes.findAll { ProcessDiff pd -> pd.renamed }
+        if( renamed ) {
+            sb << '  <p class="mode-note">Renamed processes are inferred from what each process ran, not from its name alone; their tasks are matched across the rename in every other section.</p>\n'
+            sb << '  <ul class="mode-note">\n'
+            renamed.each { ProcessDiff pd ->
+                sb << "    <li><code>${esc(pd.renamedFrom)}</code> &rarr; <code>${esc(pd.process)}</code>: ${esc(pd.renameEvidence.join('; '))}</li>\n"
+            }
+            sb << '  </ul>\n'
+        }
         sb << '</section>\n'
     }
 
@@ -717,23 +733,32 @@ ${recNote}  </div>
     // ------------------------------------------------------------- outputs
 
     private void renderOutputs(StringBuilder sb, DiffResult diff) {
-        if( !diff.diffOutputs )
-            return
-        sb << '<section id="outputs" class="section">\n'
-        sb << '  <h2>Output files</h2>\n'
-        if( diff.outputsNote )
-            sb << "  <p class=\"mode-note\">${esc(diff.outputsNote)}</p>\n"
+        if( diff.diffOutputs )
+            renderTaskFiles(sb, 'outputs', 'Output files', 'output', diff.outputsNote, diff.outputs)
+    }
 
-        final changed = diff.outputs.findAll { DiffResult.OutputDiff od -> od.hasChanges() }
+    private void renderInputs(StringBuilder sb, DiffResult diff) {
+        if( diff.diffInputs )
+            renderTaskFiles(sb, 'inputs', 'Input files', 'input', diff.inputsNote, diff.inputs)
+    }
+
+    /** One section of per-task file comparisons (outputs or staged inputs). */
+    private void renderTaskFiles(StringBuilder sb, String id, String title, String noun, String note, List<DiffResult.OutputDiff> diffs) {
+        sb << "<section id=\"${id}\" class=\"section\">\n"
+        sb << "  <h2>${title}</h2>\n"
+        if( note )
+            sb << "  <p class=\"mode-note\">${esc(note)}</p>\n"
+
+        final changed = diffs.findAll { DiffResult.OutputDiff od -> od.hasChanges() }
         if( changed.isEmpty() ) {
-            sb << '  <p class="mode-note">No output-file differences were detected across the compared tasks.</p>\n'
+            sb << "  <p class=\"mode-note\">No ${noun}-file differences were detected across the compared tasks.</p>\n"
             sb << '</section>\n'
             return
         }
         changed.each { DiffResult.OutputDiff od ->
             sb << '  <div class="task changed">\n'
             sb << '    <div class="task-hdr" onclick="toggleTask(this)">\n'
-            sb << '      <span class="pill changed">outputs</span>\n'
+            sb << "      <span class=\"pill changed\">${id}</span>\n"
             sb << "      <span class=\"task-key mono\">${esc(od.taskKey)}</span>\n"
             sb << "      <span class=\"task-proc\">${esc(od.process ?: '')}</span>\n"
             sb << '      <span class="chev">▸</span>\n'
@@ -742,7 +767,7 @@ ${recNote}  </div>
             sb << '      <table class="kv diff-table"><thead><tr><th>File</th><th>Run A</th><th>Run B</th></tr></thead><tbody>\n'
             od.files.findAll { it.kind != Kind.UNCHANGED }.each { DiffResult.OutputFileDiff f ->
                 final label = f.kind.name().toLowerCase()
-                sb << "        <tr class=\"row-changed\"><th class=\"mono\">${esc(f.path)} <span class=\"pill ${label}\">${label}</span></th>"
+                sb << "        <tr class=\"row-changed\"><th class=\"mono\">${esc(f.path)} <span class=\"pill ${label}\">${label}</span>${f.decompressed ? ' <span class=\"tag-auto\" title=\"Both files are gzip; compared by decompressed content\">gunzipped</span>' : ''}</th>"
                 sb << "<td>${esc(sizeCell(f.sizeA, f.hashA))}</td>"
                 sb << "<td>${esc(sizeCell(f.sizeB, f.hashB))}</td></tr>\n"
             }
@@ -789,7 +814,7 @@ ${recNote}  </div>
         sb << '      <table class="kv diff-table"><thead><tr><th>File</th><th>Run A</th><th>Run B</th></tr></thead><tbody>\n'
         changed.each { DiffResult.OutputFileDiff f ->
             final label = f.kind.name().toLowerCase()
-            sb << "        <tr class=\"row-changed\"><th class=\"mono\">${esc(f.path)} <span class=\"pill ${label}\">${label}</span></th>"
+            sb << "        <tr class=\"row-changed\"><th class=\"mono\">${esc(f.path)} <span class=\"pill ${label}\">${label}</span>${f.decompressed ? ' <span class=\"tag-auto\" title=\"Both files are gzip; compared by decompressed content\">gunzipped</span>' : ''}</th>"
             sb << "<td>${esc(sizeCell(f.sizeA, f.hashA))}</td>"
             sb << "<td>${esc(sizeCell(f.sizeB, f.hashB))}</td></tr>\n"
         }
@@ -1496,7 +1521,7 @@ html[data-cvd="on"] .cvd-toggle{background:var(--brand);color:var(--chip-ink);bo
 .dag-legend .ln.add{border-color:#22c55e}
 .dag-legend .ln.rem{border-top-style:dashed;border-color:#ef4444}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);overflow:hidden;box-shadow:var(--elev)}
-th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px;overflow-wrap:anywhere}
 thead th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px;background:var(--panel2)}
 tbody tr:hover{background:var(--panel2)}
 tbody tr:last-child th,tbody tr:last-child td{border-bottom:none}
@@ -1515,10 +1540,11 @@ table.kv th{width:180px;color:var(--muted);font-weight:600}
 .warn-note{color:var(--changed);font-size:13px;margin:0 0 14px;line-height:1.6;background:color-mix(in srgb,var(--changed) 10%,transparent);border:1px solid var(--hair);border-radius:var(--radius);padding:10px 14px}
 .warn-note strong{color:var(--changed)}
 .row-added{background:color-mix(in srgb,var(--added) 8%,transparent)} .row-removed{background:color-mix(in srgb,var(--removed) 8%,transparent)}
-.pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.pill{display:inline-block;white-space:nowrap;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
 .pill.added{background:color-mix(in srgb,var(--added) 15%,transparent);color:var(--added)}
 .pill.removed{background:color-mix(in srgb,var(--removed) 15%,transparent);color:var(--removed)}
-.pill.changed{background:color-mix(in srgb,var(--changed) 18%,transparent);color:var(--changed)}
+.pill.changed,.pill.renamed{background:color-mix(in srgb,var(--changed) 18%,transparent);color:var(--changed)}
+.rename-from{display:block;color:var(--muted);font-size:12px;font-weight:400}
 .pill.unchanged{background:rgba(100,116,139,.2);color:var(--muted)}
 .pill.status-ok{background:color-mix(in srgb,var(--added) 15%,transparent);color:var(--added)}
 .pill.status-err{background:color-mix(in srgb,var(--removed) 15%,transparent);color:var(--removed)}
@@ -1546,7 +1572,7 @@ table.kv th{width:180px;color:var(--muted);font-weight:600}
 .bar-fill.a{background:var(--a)}
 .bar-fill.b{background:var(--b)}
 .bar-val{min-width:80px;text-align:right;font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
-.code-diff{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.code-diff{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-top:8px}
 .code-col{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .code-col-hdr{padding:6px 12px;font-size:12px;color:var(--muted);background:var(--panel2);border-bottom:1px solid var(--line)}
 .code-col pre{margin:0;padding:0;overflow:auto;font-family:ui-monospace,monospace;font-size:12.5px}
@@ -1566,6 +1592,26 @@ table.kv th{width:180px;color:var(--muted);font-weight:600}
 .foot-sub strong{color:var(--brand)}
 .foot-sub a{color:var(--brand);text-decoration:none}
 .foot-sub a:hover{text-decoration:underline}
+/* Long unbroken values (paths, commands, hashes) wrap instead of widening the layout. */
+.task-key,.task-proc,.mode-note code,.run-facts>*{overflow-wrap:anywhere;min-width:0}
+/* Phones and narrow windows. Kept last so it overrides the base rules above. */
+@media (max-width:820px){
+  /* Auto side margins would disable stretching and size .wrap to its content. */
+  .layout{align-items:stretch}
+  .wrap{margin:0;padding:16px}
+  .hero{padding:24px 16px 20px}
+  .hero h1{font-size:24px}
+  .runs{flex-direction:column;align-items:stretch;gap:10px}
+  .run-chip{min-width:0}
+  .vs{text-align:center}
+  th,td{padding:8px 10px;font-size:13px}
+  table.kv th{width:34%}
+  .code-diff{grid-template-columns:minmax(0,1fr)}
+  .tasks-head{flex-wrap:wrap}
+  .task-hdr{flex-wrap:wrap;gap:6px 10px;padding:10px 12px}
+  .task-proc{margin-left:0;flex-basis:100%}
+  .task-body{padding:8px 10px 14px}
+}
 '''
 
     private static final String JS = '''

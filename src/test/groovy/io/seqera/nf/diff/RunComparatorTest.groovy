@@ -474,6 +474,59 @@ class RunComparatorTest extends Specification {
         diff.regressions.every { it.pctDelta != 0.0d }
     }
 
+    def 'sub-second realtime changes are below timing resolution and never flagged'() {
+        given: 'run A timed at whole-second resolution (0 ms), run B at ms resolution'
+        def a = snap('runA', [
+                task(process: 'SHORT', name: 'SHORT (1)', hash: 'h1',
+                        display: [status: 'COMPLETED', realtime: '0ms'], raw: [realtime: 0L]),
+                task(process: 'LONGER', name: 'LONGER (1)', hash: 'h2',
+                        display: [status: 'COMPLETED', realtime: '0ms'], raw: [realtime: 0L]),
+        ])
+        def b = snap('runB', [
+                task(process: 'SHORT', name: 'SHORT (1)', hash: 'h1',
+                        display: [status: 'COMPLETED', realtime: '626ms'], raw: [realtime: 626L]),
+                task(process: 'LONGER', name: 'LONGER (1)', hash: 'h2',
+                        display: [status: 'COMPLETED', realtime: '1.5s'], raw: [realtime: 1_500L]),
+        ])
+
+        expect: 'a 0 -> 626 ms move is dropped, even with a zero percentage threshold'
+        def diff = new RunComparator(new CompareOptions(perfThreshold: 0.0d)).compare(a, b)
+        diff.regressions*.taskKey == ['LONGER (1)']
+
+        and: 'a change of at least one second is still flagged'
+        diff.regressions[0].pctDelta == Double.POSITIVE_INFINITY
+    }
+
+    def '--diff-inputs reports a changed staged input and counts it as a difference'() {
+        given: 'the same task in both runs, staging different versions of an input'
+        def mk = { String run, String content ->
+            def src = java.nio.file.Files.write(projectDir.resolve("${run}-reads.tsv".toString()), content.bytes)
+            def dir = java.nio.file.Files.createDirectories(projectDir.resolve("work-${run}".toString()))
+            java.nio.file.Files.createSymbolicLink(dir.resolve('reads.tsv'), src)
+            def t = task(process: 'COUNT', name: 'COUNT (1)', hash: 'h', display: [status: 'COMPLETED'])
+            t.workdir = dir.toString()
+            snap(run, [t])
+        }
+        def a = mk('A', 'r1\t10\n')
+        def b = mk('B', 'r1\t11\n')
+
+        when:
+        def off = new RunComparator().compare(a, b)
+        def on = new RunComparator(new CompareOptions(diffInputs: true)).compare(a, b)
+
+        then: 'without the layer nothing differs'
+        off.identical
+        !off.diffInputs
+
+        and: 'with it, the input change is reported in every format and breaks identical'
+        !on.identical
+        on.inputsChangedCount() == 1
+        on.inputs[0].files[0].path == 'reads.tsv'
+        new MarkdownReportRenderer().render(on).contains('## Input files')
+        new HtmlReportRenderer().render(on).contains('<section id="inputs"')
+        (new groovy.json.JsonSlurper().parseText(new JsonReportRenderer().render(on)) as Map).summary.inputsChanged == 1
+    }
+
     def 'improvements are captured but not counted as regressions'() {
         given: 'run B is twice as fast'
         def a = snap('runA', [task(process: 'FOO', name: 'FOO (1)', hash: 'h',
@@ -1078,5 +1131,174 @@ class RunComparatorTest extends Specification {
         def json = new groovy.json.JsonSlurper().parseText(new JsonReportRenderer().render(diff)) as Map
         json.summary.newFailures == 1
         (json.failures as Map).groups.find { (it as Map).process == 'ALIGN' }.state == 'new'
+    }
+
+    def 'a renamed process is reported once as renamed and its tasks are matched across the rename'() {
+        given: 'EXAMPLEFOO in run A becomes EXAMPLE_FOO in run B, same scripts and tags'
+        def a = snap('runA', [
+                task(process: 'EXAMPLEFOO', name: 'EXAMPLEFOO (s1)', tag: 's1', hash: 'h1', script: 'foo s1.txt',
+                        display: [status: 'COMPLETED', script: 'foo s1.txt', tag: 's1']),
+                task(process: 'EXAMPLEFOO', name: 'EXAMPLEFOO (s2)', tag: 's2', hash: 'h2', script: 'foo s2.txt',
+                        display: [status: 'COMPLETED', script: 'foo s2.txt', tag: 's2']) ])
+        def b = snap('runB', [
+                task(process: 'EXAMPLE_FOO', name: 'EXAMPLE_FOO (s1)', tag: 's1', hash: 'h1', script: 'foo s1.txt',
+                        display: [status: 'COMPLETED', script: 'foo s1.txt', tag: 's1']),
+                task(process: 'EXAMPLE_FOO', name: 'EXAMPLE_FOO (s2)', tag: 's2', hash: 'h2', script: 'foo s2.txt',
+                        display: [status: 'FAILED', script: 'foo s2.txt', tag: 's2']) ])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then: 'one process row, named as in run B, remembering run A\'s name'
+        diff.processes.size() == 1
+        with(diff.processes[0]) {
+            process == 'EXAMPLE_FOO'
+            renamedFrom == 'EXAMPLEFOO'
+            countA == 2 && countB == 2
+            renamed && !unchanged
+            renameEvidence[0] == 'identical script in 2 matched task(s)'
+        }
+        diff.processesRenamed() == 1
+
+        and: 'tasks pair up instead of showing as removed + added'
+        diff.tasksAdded == 0
+        diff.tasksRemoved == 0
+        diff.tasks*.key as Set == ['EXAMPLE_FOO (s1)', 'EXAMPLE_FOO (s2)'] as Set
+        diff.tasks.find { it.key == 'EXAMPLE_FOO (s2)' }.kind == DiffResult.Kind.CHANGED
+
+        and: 'a rename is a change, and the input snapshot is untouched'
+        !diff.identical
+        a.tasks*.process == ['EXAMPLEFOO', 'EXAMPLEFOO']
+        a.tasks*.name == ['EXAMPLEFOO (s1)', 'EXAMPLEFOO (s2)']
+
+        and: 'every report says so'
+        new MarkdownReportRenderer().render(diff).contains('| EXAMPLE_FOO (was EXAMPLEFOO) | 2 | 2 | renamed |')
+        def html = new HtmlReportRenderer().render(diff)
+        html.contains('was EXAMPLEFOO</span>')
+        html.contains('<span class="pill renamed">renamed</span>')
+        def json = new groovy.json.JsonSlurper().parseText(new JsonReportRenderer().render(diff)) as Map
+        json.summary.processesRenamed == 1
+        (json.processes as List<Map>)[0].status == 'renamed'
+        (json.processes as List<Map>)[0].renamedFrom == 'EXAMPLEFOO'
+    }
+
+    def 'a removed process and an unrelated added process stay removed and added'() {
+        given:
+        def a = snap('runA', [task(process: 'SAMTOOLS_SORT', name: 'SAMTOOLS_SORT (s1)', tag: 's1', script: 'samtools sort s1.bam')])
+        def b = snap('runB', [task(process: 'SAMTOOLS_INDEX', name: 'SAMTOOLS_INDEX (s1)', tag: 's1', script: 'samtools index s1.bam')])
+
+        when:
+        def diff = new RunComparator().compare(a, b)
+
+        then:
+        diff.processes*.process == ['SAMTOOLS_INDEX', 'SAMTOOLS_SORT']
+        diff.processes.every { !it.renamed }
+        diff.processes.find { it.process == 'SAMTOOLS_SORT' }.removed
+        diff.processes.find { it.process == 'SAMTOOLS_INDEX' }.added
+        diff.tasksAdded == 1
+        diff.tasksRemoved == 1
+    }
+
+    def 'the process filter applies to the renamed process by its run B name'() {
+        given:
+        def a = snap('runA', [task(process: 'EXAMPLEFOO', name: 'EXAMPLEFOO (s1)', tag: 's1', script: 'foo s1')])
+        def b = snap('runB', [task(process: 'EXAMPLE_FOO', name: 'EXAMPLE_FOO (s1)', tag: 's1', script: 'foo s1')])
+
+        expect:
+        new RunComparator(new CompareOptions(filter: ProcessFilter.of(['EXAMPLE_*'], []))).compare(a, b).processes*.renamedFrom == ['EXAMPLEFOO']
+    }
+
+    def 'with --detect-renames=false a renamed process stays removed and added'() {
+        given:
+        def a = snap('runA', [task(process: 'EXAMPLEFOO', name: 'EXAMPLEFOO (s1)', tag: 's1', script: 'foo s1')])
+        def b = snap('runB', [task(process: 'EXAMPLE_FOO', name: 'EXAMPLE_FOO (s1)', tag: 's1', script: 'foo s1')])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(detectRenames: false)).compare(a, b)
+
+        then:
+        diff.processesRenamed() == 0
+        diff.processes.find { it.process == 'EXAMPLEFOO' }.removed
+        diff.processes.find { it.process == 'EXAMPLE_FOO' }.added
+        diff.tasksAdded == 1
+        diff.tasksRemoved == 1
+    }
+
+    def 'DAG edges of a renamed process are compared under its run B name'() {
+        given: 'run A wires EXAMPLEFOO -> CONSUME, run B the same work as EXAMPLE_FOO -> CONSUME'
+        def wd = { String run, String proc ->
+            java.nio.file.Files.createDirectories(projectDir.resolve(run).resolve(proc))
+        }
+        def stage = { Path consumer, Path producer ->
+            def out = java.nio.file.Files.write(producer.resolve('out.txt'), 'data'.bytes)
+            java.nio.file.Files.createSymbolicLink(consumer.resolve('out.txt'), out)
+        }
+        def aFoo = wd('A', 'foo'), aUse = wd('A', 'use')
+        def bFoo = wd('B', 'foo'), bUse = wd('B', 'use')
+        stage(aUse, aFoo)
+        stage(bUse, bFoo)
+        def mk = { String proc, Path dir, String script ->
+            def t = task(process: proc, name: "${proc} (s1)".toString(), tag: 's1', script: script)
+            t.workdir = dir.toString()
+            t
+        }
+        def a = snap('runA', [mk('EXAMPLEFOO', aFoo, 'foo s1'), mk('CONSUME', aUse, 'use out.txt')])
+        def b = snap('runB', [mk('EXAMPLE_FOO', bFoo, 'foo s1'), mk('CONSUME', bUse, 'use out.txt')])
+
+        when:
+        def diff = new RunComparator(new CompareOptions(diffDag: true, baseDir: projectDir)).compare(a, b)
+
+        then: 'one unchanged edge, not a removed EXAMPLEFOO edge plus an added EXAMPLE_FOO edge'
+        diff.processesRenamed() == 1
+        diff.dag.collect { "${it.from()}->${it.to()}:${it.kind}".toString() } == ['EXAMPLE_FOO->CONSUME:UNCHANGED']
+    }
+
+    def '--outputs-ignore keeps an always-different file from breaking the identical verdict'() {
+        given: 'one task whose only output difference is a timestamped report'
+        def mk = { String run, String html ->
+            def dir = java.nio.file.Files.createDirectories(projectDir.resolve(run))
+            java.nio.file.Files.write(dir.resolve('result.tsv'), 'same'.bytes)
+            java.nio.file.Files.write(dir.resolve('report.html'), html.bytes)
+            def t = task(process: 'FOO', name: 'FOO (1)', hash: 'h', display: [status: 'COMPLETED'])
+            t.workdir = dir.toString()
+            snap(run, [t])
+        }
+        def a = mk('A', '<p>generated 12:00</p>')
+        def b = mk('B', '<p>generated 13:00</p>')
+
+        when:
+        def plain = new RunComparator(new CompareOptions(diffOutputs: true)).compare(a, b)
+        def ignoring = new RunComparator(new CompareOptions(diffOutputs: true, outputsIgnore: ['*.html'])).compare(a, b)
+
+        then: 'without the pattern the report counts as a change'
+        !plain.identical
+
+        and: 'with it, the runs are identical and the note says what was skipped'
+        ignoring.identical
+        ignoring.outputs[0].ignoredFiles == ['report.html']
+        ignoring.outputsNote.contains('1 file(s) matching --outputs-ignore (`*.html`) were skipped')
+    }
+
+    def '--numeric-tolerance lets floating-point noise in outputs through and says so'() {
+        given:
+        def mk = { String run, String value ->
+            def dir = java.nio.file.Files.createDirectories(projectDir.resolve("tol-${run}".toString()))
+            java.nio.file.Files.write(dir.resolve('stats.tsv'), "mean\t${value}\n".toString().bytes)
+            def t = task(process: 'STATS', name: 'STATS (1)', hash: 'h', display: [status: 'COMPLETED'])
+            t.workdir = dir.toString()
+            snap(run, [t])
+        }
+        def a = mk('A', '0.30000000000000004')
+        def b = mk('B', '0.3')
+
+        when:
+        def exact = new RunComparator(new CompareOptions(diffOutputs: true)).compare(a, b)
+        def tolerant = new RunComparator(new CompareOptions(diffOutputs: true, numericTolerance: 1e-9d)).compare(a, b)
+
+        then:
+        !exact.identical
+        tolerant.identical
+        tolerant.outputs[0].files[0].withinTolerance
+        tolerant.outputsNote.contains('compared with --numeric-tolerance=1.0E-9; 1 file(s) differed only within it')
     }
 }

@@ -68,6 +68,19 @@ class CompareOptions {
     /** Max leading lines kept per side when line-diffing a changed text output file. */
     int outputsMaxLines = OutputComparator.DEFAULT_MAX_LINES
 
+    /**
+     * File patterns ({@code --outputs-ignore}) left out of the work-dir outputs
+     * and published-results comparisons; see {@link OutputIgnore}.
+     */
+    List<String> outputsIgnore = []
+
+    /**
+     * Numeric tolerance for text files in the outputs, published and inputs
+     * layers ({@code --numeric-tolerance}); {@code 0} compares exactly. See
+     * {@link NumericTolerance}.
+     */
+    double numericTolerance = 0.0d
+
     /** When true, compare the standard log files each matched task wrote. */
     boolean diffLogs = false
 
@@ -76,6 +89,17 @@ class CompareOptions {
 
     /** When true, reconstruct and diff each run's process&#8594;process wiring. */
     boolean diffDag = false
+
+    /** When true, compare the input files staged into each matched task's work dir. */
+    boolean diffInputs = false
+
+    /**
+     * When true (the default), a process found only in run A and one found
+     * only in run B are paired as a rename when they did the same work (see
+     * {@link ProcessRenameDetector}). Set false to report them as removed and
+     * added instead.
+     */
+    boolean detectRenames = true
 
     /**
      * When true, compare the two runs' published output directories

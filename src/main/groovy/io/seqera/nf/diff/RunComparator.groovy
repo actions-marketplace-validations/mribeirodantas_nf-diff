@@ -74,6 +74,17 @@ class RunComparator {
     static final double DEFAULT_PERF_THRESHOLD = 25.0d
 
     /**
+     * Smallest absolute {@code realtime} change, in milliseconds, that can be
+     * flagged as a regression. Nextflow times tasks with {@code date} inside the
+     * task container; when that {@code date} cannot print sub-second digits
+     * (e.g. BusyBox in many biocontainers) it falls back to whole seconds, so a
+     * sub-second task records {@code 0} or {@code 1000}. A smaller delta is
+     * below the timing resolution and would otherwise show up as a huge
+     * (or {@code +∞%}) change against a {@code 0 ms} baseline.
+     */
+    static final long MIN_REALTIME_DELTA_MILLIS = 1_000L
+
+    /**
      * Task fields that vary between essentially any two runs even when the work
      * is identical: the unique work dir, timing, measured resource usage, the
      * measured I/O counters, and the execution environment (which host/CPU a
@@ -160,6 +171,9 @@ class RunComparator {
     /** When true, compare the output files each matched task wrote to its work dir. */
     private final boolean diffOutputs
 
+    /** When true, compare the input files staged into each matched task's work dir. */
+    private final boolean diffInputs
+
     /**
      * Maximum file size (bytes) to hash when comparing same-size outputs; 0
      * means no limit. Only meaningful when {@link #diffOutputs} is set.
@@ -172,6 +186,12 @@ class RunComparator {
      */
     private final int outputsMaxLines
 
+    /** Output/published paths left out of the comparison ({@code --outputs-ignore}). */
+    private final OutputIgnore outputsIgnore
+
+    /** Tolerance for numbers in text files ({@code --numeric-tolerance}); 0 = exact. */
+    private final double numericTolerance
+
     /** When true, compare the standard log files each matched task wrote. */
     private final boolean diffLogs
 
@@ -183,6 +203,9 @@ class RunComparator {
 
     /** When true, reconstruct and diff each run's process&#8594;process wiring. */
     private final boolean diffDag
+
+    /** When true, pair processes renamed between the runs (see {@link ProcessRenameDetector}). */
+    private final boolean detectRenames
 
     /** When true, compare the two runs' published output directories. */
     private final boolean diffPublished
@@ -200,11 +223,15 @@ class RunComparator {
         this.crossProject = norm(this.baseDirA) != norm(this.baseDirB)
         this.perfThreshold = opts.perfThreshold
         this.diffOutputs = opts.diffOutputs
+        this.diffInputs = opts.diffInputs
         this.outputsMaxBytes = opts.outputsMaxBytes
         this.diffLogs = opts.diffLogs
         this.logsMaxLines = opts.logsMaxLines
         this.outputsMaxLines = opts.outputsMaxLines
+        this.outputsIgnore = OutputIgnore.of(opts.outputsIgnore)
+        this.numericTolerance = opts.numericTolerance
         this.diffDag = opts.diffDag
+        this.detectRenames = opts.detectRenames
         this.diffPublished = opts.diffPublished
         this.publishedDirA = opts.publishedDirA
         this.publishedDirB = opts.publishedDirB
@@ -294,11 +321,24 @@ class RunComparator {
         result.metadata = compareMetadata(a, b)
         result.params = compareParams(a, b)
         computeConfig(result, a, b)
-        result.processes = compareProcesses(a, b).findAll { ProcessDiff pd -> filter.accepts(pd.process) }
-        result.software = compareSoftware(a, b).findAll { DiffResult.SoftwareDiff sd -> filter.accepts(sd.process) }
-        result.efficiency = computeEfficiency(a, b).findAll { DiffResult.ProcessEfficiency pe -> filter.accepts(pe.process) }
-        result.tasks = compareTasks(a, b).findAll { TaskDiff td -> filter.accepts(td.process()) }
-        computeTaskWarnings(result, a, b)
+
+        // A process renamed between the runs (EXAMPLEFOO -> EXAMPLE_FOO) would
+        // otherwise show as one removed and one added process, with all its
+        // tasks unmatched. Compare the task-level layers against a view of run
+        // A that uses run B's names for those processes.
+        final renames = detectRenames ? new ProcessRenameDetector().detect(a, b) : new ArrayList<ProcessRenameDetector.Rename>()
+        final renameMap = new LinkedHashMap<String,String>()
+        renames.each { ProcessRenameDetector.Rename r ->
+            renameMap.put(r.from, r.to)
+            log.info "nf-diff: process ${r.from} looks renamed to ${r.to} (${r.evidence.join('; ')})"
+        }
+        final viewA = renameMap ? a.withRenamedProcesses(renameMap) : a
+
+        result.processes = compareProcesses(viewA, b, renames).findAll { ProcessDiff pd -> filter.accepts(pd.process) }
+        result.software = compareSoftware(viewA, b).findAll { DiffResult.SoftwareDiff sd -> filter.accepts(sd.process) }
+        result.efficiency = computeEfficiency(viewA, b).findAll { DiffResult.ProcessEfficiency pe -> filter.accepts(pe.process) }
+        result.tasks = compareTasks(viewA, b).findAll { TaskDiff td -> filter.accepts(td.process()) }
+        computeTaskWarnings(result, viewA, b)
 
         result.tasks.each { TaskDiff td ->
             switch( td.kind ) {
@@ -311,21 +351,22 @@ class RunComparator {
 
         result.tasksRecomputed = countRecomputed(result.tasks)
         result.regressions = computeRegressions(result.tasks)
-        computeFailures(result, a, b)
+        computeFailures(result, viewA, b)
 
-        // The three opt-in work-dir layers each fan independent, read-only I/O
+        // The opt-in work-dir layers each fan independent, read-only I/O
         // out across threads. Share a single bounded pool for the whole
         // comparison rather than creating (and tearing down) one per layer, so
         // --diff-all no longer pays for three create/shutdown cycles. The pool
         // is only built when at least one of those layers is enabled.
-        final pool = (diffOutputs || diffLogs || diffDag)
+        final pool = (diffOutputs || diffInputs || diffLogs || diffDag)
                 ? Executors.newFixedThreadPool(
                     Math.max(1, Runtime.runtime.availableProcessors()), IO_THREAD_FACTORY)
                 : null
         try {
             computeOutputs(result, pool)
+            computeInputs(result, pool)
             computeLogs(result, pool)
-            computeDag(result, a, b, pool)
+            computeDag(result, a, b, pool, renameMap)
         }
         finally {
             pool?.shutdownNow()
@@ -348,7 +389,7 @@ class RunComparator {
             return
         result.diffPublished = true
 
-        final comparator = new PublishedComparator(outputsMaxBytes, outputsMaxLines)
+        final comparator = new PublishedComparator(outputsMaxBytes, outputsMaxLines, outputsIgnore, numericTolerance)
         final pd = comparator.compare(publishedDirA, publishedDirB)
         result.published = pd
 
@@ -364,7 +405,7 @@ class RunComparator {
                     "from ${publishedDirA} (run A) and ${publishedDirB} (run B). Changed text files are additionally " +
                     "diffed line by line (first ${outputsMaxLines} lines per file; binary files show a size/hash " +
                     "change only). Symlinks are followed, so this works whether publishDir used copy or symlink " +
-                    "mode.${capped}").toString()
+                    "mode.${capped}${ignoredNote(pd.ignoredFiles.size())}${toleranceNote(pd.files)}").toString()
         }
     }
 
@@ -377,7 +418,7 @@ class RunComparator {
      * reconstruction bounded by which work directories still exist locally, so
      * it never affects {@link DiffResult#isIdentical()} or {@code --fail-on-change}.
      */
-    private void computeDag(DiffResult result, RunSnapshot a, RunSnapshot b, ExecutorService pool) {
+    private void computeDag(DiffResult result, RunSnapshot a, RunSnapshot b, ExecutorService pool, Map<String,String> renames) {
         if( !diffDag )
             return
         result.diffDag = true
@@ -391,19 +432,25 @@ class RunComparator {
                 { -> comparator.graphOf(b, baseDirB) } as Callable<DagComparator.RunGraph>)
         final graphA = graphs[0]
         final graphB = graphs[1]
+        // Run A's graph is built from its own (lineage / work-dir) records, so
+        // map renamed processes to run B's names before comparing edges.
+        final Set<DiffResult.DagEdge> edgesA = renames
+                ? (graphA.edges.collect { DiffResult.DagEdge e ->
+                        new DiffResult.DagEdge(from: renames.get(e.from) ?: e.from, to: renames.get(e.to) ?: e.to) } as Set<DiffResult.DagEdge>)
+                : (graphA.edges as Set<DiffResult.DagEdge>)
 
         final all = new TreeSet<DiffResult.DagEdge>({ DiffResult.DagEdge x, DiffResult.DagEdge y ->
             final byTo = (x.to ?: '') <=> (y.to ?: '')
             byTo != 0 ? byTo : ((x.from ?: '') <=> (y.from ?: ''))
         } as Comparator<DiffResult.DagEdge>)
-        all.addAll(graphA.edges)
+        all.addAll(edgesA)
         all.addAll(graphB.edges)
 
         final diffs = new ArrayList<DiffResult.DagEdgeDiff>()
         all.each { DiffResult.DagEdge e ->
             if( !filter.accepts(e.from) && !filter.accepts(e.to) )
                 return
-            final inA = graphA.edges.contains(e)
+            final inA = edgesA.contains(e)
             final inB = graphB.edges.contains(e)
             final kind = inA && inB ? Kind.UNCHANGED : (inB ? Kind.ADDED : Kind.REMOVED)
             diffs << new DiffResult.DagEdgeDiff(edge: e, kind: kind)
@@ -463,6 +510,36 @@ class RunComparator {
     }
 
     /**
+     * Populate the staged-inputs layer ({@code --diff-inputs}): for each task
+     * matched in both runs, compare the input files Nextflow staged into its
+     * work directory (see {@link InputComparator}). Like the outputs layer it
+     * needs the work directories, and a changed input counts as a difference.
+     */
+    private void computeInputs(DiffResult result, ExecutorService pool) {
+        if( !diffInputs )
+            return
+        result.diffInputs = true
+        final comparator = new InputComparator(outputsMaxBytes, outputsMaxLines, numericTolerance)
+        final matched = result.tasks.findAll { TaskDiff td -> td.a != null && td.b != null }
+        result.inputs = mapMatchedInParallel(pool, matched,
+                { TaskDiff td -> comparator.compare(td.a, td.b) } as Function<TaskDiff, DiffResult.OutputDiff>)
+
+        final unavailable = result.inputs.count { DiffResult.OutputDiff od -> !od.availableA || !od.availableB }
+        if( result.inputs.isEmpty() )
+            result.inputsNote = 'No tasks were matched in both runs, so there were no inputs to compare.'
+        else if( unavailable == result.inputs.size() )
+            result.inputsNote = ('No work directories were available locally, so inputs could not be compared. ' +
+                    'Input diffing needs the tasks\' work directories to still exist on this machine.').toString()
+        else
+            result.inputsNote = ("Input files staged into each task's work directory (Nextflow's input symlinks), " +
+                    "followed to the files they point at as those exist now. Inputs that resolve to the same file in " +
+                    "both runs are unchanged without being read; others are compared by size, then SHA-256, and " +
+                    "changed text files are diffed line by line. Inputs staged by copy are not covered." +
+                    (unavailable > 0 ? " ${unavailable} task(s) had a missing work directory and were skipped." : '') +
+                    toleranceNote(result.inputs.collectMany { DiffResult.OutputDiff od -> od.files })).toString()
+    }
+
+    /**
      * Populate the outputs layer: for each task matched in both runs, compare
      * the files it wrote to its work directory. Skipped unless output diffing
      * was requested. Only matched tasks are inspected — an added/removed task
@@ -477,7 +554,7 @@ class RunComparator {
         // reads final config and creates fresh locals per call, so it is safe
         // to run matched task pairs concurrently (each pair streams SHA-256 over
         // independent work dirs). Ordering follows result.tasks regardless.
-        final comparator = new OutputComparator(outputsMaxBytes, outputsMaxLines)
+        final comparator = new OutputComparator(outputsMaxBytes, outputsMaxLines, outputsIgnore, numericTolerance)
         result.outputs = mapMatchedInParallel(pool, result.tasks,
                 { TaskDiff td -> comparator.compare(td.a, td.b) } as Function<TaskDiff, DiffResult.OutputDiff>)
 
@@ -492,7 +569,25 @@ class RunComparator {
             result.outputsNote = ("Output files compared by size, then SHA-256 for same-size files, from each task's " +
                     "work directory as it exists now. Changed text files are additionally diffed line by line " +
                     "(first ${outputsMaxLines} lines per file; binary files show a size/hash change only).${capped}" +
-                    (unavailable > 0 ? " ${unavailable} task(s) had a missing work directory and were skipped." : '')).toString()
+                    (unavailable > 0 ? " ${unavailable} task(s) had a missing work directory and were skipped." : '') +
+                    ignoredNote((int) result.outputs.sum(0) { DiffResult.OutputDiff od -> od.ignoredFiles.size() }) +
+                    toleranceNote(result.outputs.collectMany { DiffResult.OutputDiff od -> od.files })).toString()
+    }
+
+    /** Note fragment saying a numeric tolerance is in use and how many files it let through, or empty. */
+    private String toleranceNote(List<DiffResult.OutputFileDiff> files) {
+        if( numericTolerance <= 0 )
+            return ''
+        final count = files.count { DiffResult.OutputFileDiff f -> f.withinTolerance } as int
+        return (" Numbers in text files were compared with --numeric-tolerance=${numericTolerance}; " +
+                "${count} file(s) differed only within it and count as unchanged.").toString()
+    }
+
+    /** Note fragment saying how many files --outputs-ignore skipped, or empty. */
+    private String ignoredNote(int count) {
+        if( outputsIgnore.isEmpty() )
+            return ''
+        return " ${count} file(s) matching --outputs-ignore (${outputsIgnore.describe()}) were skipped and never count as a change.".toString()
     }
 
     /**
@@ -560,6 +655,10 @@ class RunComparator {
                 // An unchanged metric (0.0%) is never a regression, even with
                 // --perf-threshold=0, which means "flag any measurable change" (#19).
                 if( pct == null || pct == 0.0d || Math.abs(pct) < perfThreshold )
+                    return
+                // Sub-second realtime changes are below Nextflow's worst-case
+                // timing resolution (whole seconds in BusyBox-based containers).
+                if( field == 'realtime' && Math.abs(vb - va) < MIN_REALTIME_DELTA_MILLIS )
                     return
                 out << new DiffResult.RegressionDiff(
                         taskKey  : td.key,
@@ -781,15 +880,24 @@ class RunComparator {
         return isRepoCommit != null && isRepoCommit.test(r)
     }
 
-    private List<ProcessDiff> compareProcesses(RunSnapshot a, RunSnapshot b) {
+    /**
+     * Task counts per process. {@code a} is run A as seen through the detected
+     * {@code renames} (so a renamed process already carries run B's name);
+     * those rows are tagged with run A's original name and the evidence.
+     */
+    private List<ProcessDiff> compareProcesses(RunSnapshot a, RunSnapshot b, List<ProcessRenameDetector.Rename> renames) {
         final countsA = a.taskCountByProcess()
         final countsB = b.taskCountByProcess()
         final names = new TreeSet<String>()
         names.addAll(countsA.keySet())
         names.addAll(countsB.keySet())
+        final byTarget = new HashMap<String,ProcessRenameDetector.Rename>()
+        renames.each { ProcessRenameDetector.Rename r -> byTarget.put(r.to, r) }
 
         return names.collect { String p ->
-            new ProcessDiff(process: p, countA: (countsA[p] ?: 0), countB: (countsB[p] ?: 0))
+            final r = byTarget.get(p)
+            new ProcessDiff(process: p, countA: (countsA[p] ?: 0), countB: (countsB[p] ?: 0),
+                    renamedFrom: r?.from, renameEvidence: r != null ? new ArrayList<String>(r.evidence) : new ArrayList<String>())
         }
     }
 

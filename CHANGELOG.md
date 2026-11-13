@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-12
+
+### Added
+
+- **Compare each task's input files.** `--diff-inputs` (also part of
+  `--diff-all`) follows the input links Nextflow staged into each matched
+  task's work directory and compares the files they point at, so when a
+  result changed you can see whether its inputs did. Inputs both runs took
+  from the same file are unchanged without being read; the rest are compared
+  like outputs, including line diffs and staged folders.
+
+- **Gzipped outputs are compared by content.** `--diff-outputs` and
+  `--published-a`/`-b` used to compare `.gz` files byte for byte, but `gzip`
+  writes a timestamp and file name into its header, so identical results
+  showed as changed (and failed `--fail-on-change`). Gzip and BGZF files
+  (`.vcf.gz`, `.fastq.gz`, …) are now compared by decompressed content, and a
+  changed gzipped text file gets a line diff of its decompressed text.
+
+- **Renamed processes are matched instead of shown as removed + added.** When
+  a process exists only in run A and another only in run B (e.g. `EXAMPLEFOO`
+  → `EXAMPLE_FOO`), nf-diff now compares what they ran — task scripts, tags,
+  task count, container/Conda environment and name similarity — and reports
+  a match as one *renamed* process, with the evidence. Its tasks are then
+  compared field by field across the rename in every layer. Turn it off
+  with `--detect-renames=false`.
+
+- **Nextflow version is compared even without a lineage store.** When a run
+  has no `.lineage/` record, the Nextflow version and build are now recovered
+  from the launch directory's rotated `.nextflow.log*` files, matched on both
+  session id and run name so `-resume` runs stay distinct. Nextflow keeps only
+  the ten most recent logs, so older runs still show no version row.
+
+- **Ignore expected differences in outputs.** `--outputs-ignore=<globs>` leaves
+  files that differ on every run by design (timestamped reports,
+  `versions.yml`, `pipeline_info/`) out of `--diff-outputs` and
+  `--published-a`/`-b`, so they no longer fail `--fail-on-change`. Patterns
+  follow `.gitignore`-style rules; the report says how many files were skipped.
+
+- **Numeric tolerance for text outputs.** `--numeric-tolerance=<x>` treats
+  numbers in changed text files as equal when `|a − b| ≤ x × max(1, |a|, |b|)`,
+  so floating-point noise (`0.30000000000000004` vs `0.3`) no longer counts as
+  a change in outputs, published results or inputs, and line diffs show only
+  real changes. Numbers inside identifiers (`chr1`) must still match exactly.
+
+### Fixed
+
+- **The HTML report now fits phone screens.** Below 820 px wide, the content
+  area could grow as wide as its longest unbreakable value (a path, command
+  or hash) and the overflow was clipped out of reach. It now always matches
+  the screen width. Long values in tables and task headers wrap at every
+  width. On narrow screens the run cards stack, tables use less padding, and
+  side-by-side script/log diffs stack vertically.
+
+- **Sub-second tasks no longer show as `+∞%` runtime regressions.** Nextflow
+  times tasks with the container's `date`; in BusyBox-based images (many
+  biocontainers) that has whole-second resolution, so a sub-second task records
+  a `realtime` of `0` and any later non-zero reading looked like an infinite
+  slowdown. A `realtime` change must now also be at least 1 s to be flagged.
+
+## [0.9.6] - 2026-11-03
+
+### Fixed
+
+- **`nextflow plugin nf-diff:diff` works again on Nextflow 26.10.** Nextflow
+  26.10 changed the plugin-command entry point from
+  `exec(Launcher, String, String, List)` to `exec(String, String, List[, Map])`,
+  so 0.9.5 failed immediately with *"Receiver class
+  io.seqera.nf.diff.DiffPlugin does not define or inherit an implementation of
+  the resolved method 'int exec(java.lang.String, java.lang.String,
+  java.util.List, java.util.Map)'"*. `DiffPlugin` now implements
+  `PluginExecAware` directly, declaring every signature instead of relying on
+  the `PluginAbstractExec` trait (whose methods are fixed at compile time), so
+  one build runs on 25.04 through 26.10.
+- **The configuration layer resolves on Nextflow 26.10.** 26.10 moved
+  `setOptions`/`setCmdRun`/`setUserConfigFiles`/`buildConfigObject` from
+  `ConfigBuilder` to the new `ConfigCmdAdapter`. Without this fix, `diff` failed
+  with *"ConfigBuilder.setOptions(nextflow.cli.CliOptions)"*. The adapter is
+  now used when present, with a fallback to `ConfigBuilder` on older lines.
+
 ## [0.9.5] - 2026-10-11
 
 ### Fixed
